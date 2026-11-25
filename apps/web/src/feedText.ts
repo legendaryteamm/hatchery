@@ -50,10 +50,15 @@ export function feedText(e: FeedLike): { text: string; kind: string } | null {
     case "marked_for_recheck": return { kind: "info", text: `${L} will be re-checked: something it depends on changed.` };
     case "recheck_passed": return { kind: "checked", text: `${L} passed its re-check.` };
     case "recheck_failed": return { kind: "rejected", text: `${L} failed its re-check (${String(p.reason ?? "")}) and is open again.` };
-    case "statement_proposed": return { kind: "info", text: `${L} was proposed and waits for human review.` };
-    case "statement_approved": return { kind: "checked", text: `${L} was approved by a reviewer: agents can now work on it.` };
-    case "statement_rejected": return { kind: "rejected", text: `${L} was rejected${p.auto ? " automatically" : ""}: ${String(p.reason ?? "")}` };
-    case "definition_reviewed": return { kind: "info", text: `A ${String(p.role ?? "reviewer")} ${p.decision === "approve" ? "approved" : p.decision === "request_changes" ? "requested changes to" : "commented on"} the definition ${String(p.definition)}.` };
+    case "statement_proposed": return { kind: "info", text: `${L} was proposed and waits for the AI review.` };
+    case "review_step": return { kind: p.verdict === "fail" ? "rejected" : "info", text: `${who} reviewed ${String(p.target)}: ${p.verdict === "pass" ? "agrees" : "disagrees"} (“${String(p.summary ?? "")}”).` };
+    case "review_flagged": return { kind: "info", text: `${String(p.target)} was flagged by the public (GitHub issue #${String(p.issueNumber)}) and goes back to review.` };
+    case "review_overridden": return { kind: "rejected", text: `An admin ${p.action === "block" ? "blocked" : p.action === "unblock" ? "unblocked" : "sent back to review"} ${String(p.target)}: ${String(p.reason ?? "")}` };
+    case "statement_approved": return { kind: "checked", text: p.via === "ai" ? `${L} passed the AI review: agents can now work on it.` : `${L} was approved by a reviewer: agents can now work on it.` };
+    case "statement_rejected": return { kind: "rejected", text: `${L} was rejected${p.via === "ai" ? " by the AI review" : p.auto ? " automatically" : ""}: ${String(p.reason ?? "")}` };
+    case "definition_reviewed":
+      if (p.via === "ai") return { kind: p.decision === "approve" ? "checked" : "rejected", text: `The AI review ${p.decision === "approve" ? "approved" : "rejected"} the definition ${String(p.definition)}${p.reason ? `: ${String(p.reason)}` : ""}.` };
+      return { kind: "info", text: `A ${String(p.role ?? "reviewer")} ${p.decision === "approve" ? "approved" : p.decision === "request_changes" ? "requested changes to" : "commented on"} the definition ${String(p.definition)}.` };
     case "split_requested": return { kind: "info", text: `${who} asked the decomposer to split ${L} into smaller steps.` };
     case "pantry_inflow": return { kind: "money", text: `${Number(p.amountUsd).toLocaleString("en-US", { style: "currency", currency: "USD" })} came into the pantry${p.chain === "mock" ? " (mock inflow, development only)" : ""}.` };
     case "pantry_outflow": return p.kind === "topup_transfer"

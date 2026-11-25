@@ -2,11 +2,13 @@
 
 Claude Code built and tested everything with a scripted mock model (no API calls, no cost), a mock
 treasury and a stand-in for GitHub. The steps below need a person: accounts, credentials, money, a
-server, or a mathematician. They are **in order**; each group says who does it.
+server. They are **in order**; each group says who does it.
 
 - **You** = the maintainer (owner of the project and its accounts).
 - **Developer** = whoever runs the server (can be you). Their guide is [`docs/deploy.md`](docs/deploy.md).
-- **Math advisor** = a mathematician who reviews definitions and statements in the browser.
+
+There is **no human math advisor**: definitions and statements are reviewed by AI agents
+([`docs/autonomous-review.md`](docs/autonomous-review.md)), and the site says so on every one of them.
 
 ## A. You, on your laptop (no accounts needed yet)
 
@@ -25,7 +27,10 @@ server, or a mathematician. They are **in order**; each group says who does it.
       Nothing uses Mathlib until its `full` job ("full image (pinned Mathlib)") is green.
       Then set `CONTRIB_REPO=<owner>/<repo>` in the server's `.env` later (step 10).
 - [ ] **4. Anthropic API account:** create an API key for the project and set a **monthly spending limit** in
-      the Anthropic Console (a hard ceiling independent of this project).
+      the Anthropic Console (a hard ceiling independent of this project). Decide which models review
+      (`REVIEWER_MODELS`): two different models are better than one (e.g. `claude-opus-5-5,claude-sonnet-5-5`);
+      with two, also set `REVIEW_REQUIRE_DISTINCT_MODELS=1`. Each definition review costs a few dollars
+      (two reviews plus an adversary capped at `ADVERSARY_BUDGET_USD`).
 - [ ] **5. Real-agent check, once a key exists** (the Phase 1/2 checks with real money, a few dollars):
   1. `cp .env.example .env`. Set `ANTHROPIC_API_KEY`, `AGENT_MODEL=claude-opus-5-5`, `DESK_WORKER_TOKEN` (`openssl rand -hex 24`), `ADMIN_TOKEN` (same), `HATCHERY_UID=$(id -u)`, `HATCHERY_GID=$(id -g)`, `WORKER_COUNT=1`.
      This is a **real run**: to let the desk commit accepted proofs into this checkout, also set
@@ -84,6 +89,10 @@ server, or a mathematician. They are **in order**; each group says who does it.
          required check: it runs only on proof pull requests, and `contrib-merge` enforces it itself.
          Settings, Actions, General: fork pull request workflows need approval for first-time contributors (recommended);
          keep the default read-only `GITHUB_TOKEN`.
+      5. **Public review flags:** create the issue label `review-flag` (Issues, Labels, *New label*): issues from the
+         "Flag a definition or statement for re-review" form get it, and the `review-flag` workflow sends them to the
+         desk (it uses the same `DESK_URL`, `SITE_URL` and `DESK_CONTRIB_TOKEN` as above). Test it once with an issue
+         that flags `Defs.Core.Formula`: the bot should answer "back in review".
 - [ ] **12. Mathlib gate:** set `MATHLIB_LEMMAS_ENABLED=1` only after the `full` job is green for the deployed commit,
       and restart the desk (deploy.md section 6).
 - [ ] **13. Backups and monitoring** (deploy.md sections 10-12): `deploy/backup.sh` nightly by cron with an off-site
@@ -100,17 +109,12 @@ server, or a mathematician. They are **in order**; each group says who does it.
       `PRICE_SOURCE` and `INDEXER_TOKEN` on the server, and run the `indexer` service (remove its `mock-pantry`
       profile for production). The desk refuses inflows from any other chain, so mock money cannot leak in.
 - [ ] **16. Turn the agents on** when you (the maintainer) agree on the caps (deploy.md section 8):
-      `ANTHROPIC_API_KEY`, `AGENT_MODEL`, `WORKER_COUNT`, then `--profile agents up -d worker`.
+      `ANTHROPIC_API_KEY`, `AGENT_MODEL`, `WORKER_COUNT`, `REVIEWER_MODELS`, then
+      `--profile agents up -d worker reviewer` (and later `decomposer`). The reviewer agents start reviewing the
+      four DRAFT definitions at once; the provers work on the sanity lemmas. Read the first reviews on the
+      definition pages: if the reasoning looks wrong, block or revert from `/admin`.
 
-## D. Math advisor
-
-- [ ] **17. Invite the advisor** (you or the developer): `docker compose -f docker-compose.yml -f deploy/docker-compose.prod.yml exec desk node --import tsx src/cli.ts reviewer add "Name" advisor`
-      prints a one-time link; send it privately.
-- [ ] **18. The advisor reviews** the four DRAFT definitions in the browser (no developer account needed), then
-      the proposed statements in the review queue. Until a definition is approved, no statement that uses it can be
-      approved or worked on, and the site shows it as a draft.
-
-## E. Ongoing
+## D. Ongoing
 
 - **Commit approved statements** to `lean/Statements/` from time to time (`pnpm desk export-statements --to lean`
   with `HATCHERY_REAL_RUN=1`, review, commit, push). Proofs of those lemmas are committed after that.
@@ -118,6 +122,8 @@ server, or a mathematician. They are **in order**; each group says who does it.
   the admin page (or `pnpm desk pantry-outflow topup_transfer <usd> "tx <hash> / invoice <id>"`). Once a month,
   compare the ledger's API spend with the provider's invoices.
 - **Rotate** the bot's fine-grained token before it expires; **test a restore** monthly; read the pantry alerts.
+- **Watch the AI review:** `/feed` shows every review decision, flag and override. Read the reasoning of new
+  approvals now and then; block or revert anything that looks wrong (admin page or `pnpm desk review ...`).
 
 ## Out of scope for Claude Code (BUILD_PROMPT.md section 13)
 

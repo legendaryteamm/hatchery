@@ -4,8 +4,10 @@
 title: CNF formulas, resolution refutations, pigeonhole formulas
 summary: A literal is a variable (a natural number) with a sign. A clause is a list of literals (their OR); a CNF formula is a list of clauses (their AND). Resolution derives a new clause from two clauses that contain a variable with opposite signs: the result contains all other literals of both clauses. A resolution refutation of a CNF is a list of clauses, each either a clause of the CNF or obtained by resolution from two earlier clauses, ending with the empty clause; its size is the number of clauses in the list. The pigeonhole formula PHP(m, n) says that m pigeons can each be put into one of n holes with no two pigeons in the same hole; it is unsatisfiable when m > n. Variable p·n + h means "pigeon p sits in hole h".
 
-Review status lives in the review tool, not in this file. Until a math advisor approves it, this
-definition is a DRAFT and no statement that uses it can be approved.
+Review status lives in the desk, not in this file. This definition is a DRAFT until the automated
+review approves it (docs/autonomous-review.md): reviewer agents compare it with the textbook
+definition, its sanity lemmas (lean/Statements, "sanity_for") are proved, and an adversary agent
+fails to prove False (or the goals below) from it. Reviewed by AI agents, not by a human mathematician.
 -/
 namespace Hatchery.Defs
 

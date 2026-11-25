@@ -43,6 +43,10 @@ jobs:
         run: pnpm test
         env:
           JUDGE_TEST_IMAGE: hatchery-lean-runner:lite
+      - name: Every statement elaborates and is not trivial (Mathlib ones in the full job)
+        run: pnpm --filter @hatchery/judge cli check-statements
+        env:
+          JUDGE_IMAGE: hatchery-lean-runner:lite
       - name: Re-check every proof in lean/Proofs (proofs needing Mathlib are checked by the full job)
         run: pnpm --filter @hatchery/judge cli check-repo
         env:
@@ -75,6 +79,10 @@ jobs:
         env:
           JUDGE_TEST_IMAGE: hatchery-lean-runner:full
           JUDGE_REQUIRE_FULL: "1"
+      - name: Every statement elaborates and is not trivial (including the Mathlib sanity lemmas)
+        run: pnpm --filter @hatchery/judge cli check-statements
+        env:
+          JUDGE_IMAGE: hatchery-lean-runner:full
       - name: Re-check every proof in lean/Proofs with Mathlib
         run: pnpm --filter @hatchery/judge cli check-repo
         env:

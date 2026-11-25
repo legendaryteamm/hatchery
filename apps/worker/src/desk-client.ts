@@ -73,6 +73,12 @@ export interface ProposalResult {
   rejectReason: string | null;
 }
 
+/** Mirrors apps/desk ReviewTask (src/ai-review.ts). */
+export type ReviewTask =
+  | { kind: "definition"; roundId: number; definition: { id: string; title: string; summary: string; source: string; imports: { id: string; source: string }[]; requiresMathlib: boolean }; flags: string[] }
+  | { kind: "statement"; roundId: number; statement: { id: string; title: string; leanStatement: string; source: string; rationale: string; program: { slug: string; title: string; description: string }; definitions: { id: string; summary: string }[] }; flags: string[] }
+  | { kind: "adversary"; roundId: number; definition: { id: string; source: string; imports: { id: string; source: string }[] }; goals: { index: number; lemmaId: string; goal: string }[]; budgetUsd: number; spentUsd: string; minChecks: number; checks: number };
+
 export class DeskHttpError extends Error {
   constructor(readonly status: number, message: string, readonly reason?: string) {
     super(message);
@@ -201,9 +207,26 @@ export class DeskClient {
   async propose(p: Proposal): Promise<ProposalResult> {
     return (await this.req<ProposalResult>("POST", "/internal/proposals", { agentId: this.agentId, ...p }, this.timeouts.judgeMs))!;
   }
-  recordOtherUsage(purpose: "decompose", call: { parts: UsagePart[]; requestId?: string }) {
+  recordOtherUsage(purpose: "decompose" | "review", call: { parts: UsagePart[]; requestId?: string }) {
     return this.req("POST", "/internal/usage", { agentId: this.agentId, purpose, ...call });
   }
+  // ---------------------------------------------------------------- AI review (reviewer and adversary agents)
+  async reviewTask(model: string): Promise<ReviewTask | null> {
+    return this.req<ReviewTask>("GET", `/internal/review/task?${this.q({ model })}`);
+  }
+  async reviewVerdict(roundId: number, v: { model: string; agree: boolean; summary: string; reasoning: string; details: Record<string, unknown>; parts: UsagePart[]; requestId?: string }): Promise<{ roundStatus: string }> {
+    return (await this.req<{ roundStatus: string }>("POST", `/internal/review/rounds/${roundId}/verdict`, { agentId: this.agentId, ...v }))!;
+  }
+  async adversaryUsage(roundId: number, call: { parts: UsagePart[]; requestId?: string }): Promise<{ spentUsd: string; budgetLeft: boolean }> {
+    return (await this.req<{ spentUsd: string; budgetLeft: boolean }>("POST", `/internal/review/rounds/${roundId}/adversary/usage`, { agentId: this.agentId, ...call }))!;
+  }
+  async adversaryCheck(roundId: number, goalIndex: number, source: string): Promise<{ verdict: JudgeVerdict; roundStatus: string }> {
+    return (await this.req<{ verdict: JudgeVerdict; roundStatus: string }>("POST", `/internal/review/rounds/${roundId}/adversary/check`, { agentId: this.agentId, goalIndex, source }, this.timeouts.judgeMs))!;
+  }
+  async adversaryDone(roundId: number, notes: string): Promise<{ roundStatus: string }> {
+    return (await this.req<{ roundStatus: string }>("POST", `/internal/review/rounds/${roundId}/adversary/done`, { agentId: this.agentId, notes }))!;
+  }
+
   async searchChecked(q: string): Promise<unknown[]> {
     return (await this.req<unknown[]>("GET", `/internal/checked?${this.q({ q })}`))!;
   }

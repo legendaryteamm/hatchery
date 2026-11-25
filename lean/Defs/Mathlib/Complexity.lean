@@ -8,9 +8,13 @@ import Mathlib.Algebra.Polynomial.Eval.Defs
 title: Polynomial time, P and NP (Mathlib Turing machines)
 summary: Inputs are binary strings (lists of booleans) and a decision problem is a set of binary strings. A function from binary strings to true/false is polynomial-time computable if one of Mathlib's multi-stack Turing machines (FinTM2) computes it, reading the input string bit by bit and writing the one-bit answer, within a number of steps bounded by a polynomial in the input length. P is the class of decision problems whose membership test is polynomial-time computable. NP is the class of decision problems L for which there is a polynomial-time verifier V and a polynomial p such that a string w is in L exactly when some certificate c of length at most p(|w|) makes V accept the pair (w, c). The pair is written as one binary string: each bit b of w becomes the two bits (1, b), then a single 0 marks the end of w, then c follows.
 
+adversary: Hatchery.Defs.P = Hatchery.Defs.NP; Hatchery.Defs.P ≠ Hatchery.Defs.NP
+
 Built only in the full (Mathlib) judge image: it cannot be compiled on a machine without Mathlib.
-Review status lives in the review tool, not in this file. Until a math advisor approves it, this
-definition is a DRAFT and no statement that uses it can be approved.
+Review status lives in the desk, not in this file. This definition is a DRAFT until the automated
+review approves it (docs/autonomous-review.md): reviewer agents compare it with the textbook
+definition, its sanity lemmas (lean/Statements, "sanity_for") are proved, and an adversary agent
+fails to prove False (or the goals below) from it. Reviewed by AI agents, not by a human mathematician.
 -/
 namespace Hatchery.Defs
 

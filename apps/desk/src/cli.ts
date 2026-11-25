@@ -10,7 +10,9 @@
  *                              record money leaving the treasury (public ledger)
  *   pantry-ledger              print the public ledger as CSV
  *   kill-switch on|off         flip the shared kill switch
- *   reviewer add "<name>" advisor|maintainer    create a reviewer; prints a one-time invite link
+ *   review revert|block|unblock <Defs.X | L-...> "<reason>"   admin override of the AI review
+ *   review show <Defs.X | L-...>                            every AI review round, with reasoning
+ *   reviewer add "<name>" advisor|maintainer    (HUMAN_REVIEW_TOOL=1 only) create a human reviewer; prints a one-time invite link
  *   reviewer invite <id>       new invite link (old one stops working)
  *   reviewer list | reviewer disable <id>
  *   export-statements --to <dir>   write approved statement files (a maintainer commits them)
@@ -76,7 +78,20 @@ try {
       writeFileSync(file, r.content);
       console.log(`${r.id} -> ${file}`);
     }
+  } else if (cmd === "review") {
+    const { AiReview } = await import("./ai-review.ts");
+    const ai = new AiReview(desk, new Review(desk, desk.judge));
+    const [sub, id, reason] = process.argv.slice(3);
+    const kind = id?.startsWith("Defs.") ? "definition" : "statement";
+    if ((sub === "revert" || sub === "block" || sub === "unblock") && id && reason) {
+      console.log(await ai.adminOverride(kind, id, sub, reason, `cli:${process.env.USER ?? "unknown"}`));
+    } else if (sub === "show" && id) {
+      console.log(JSON.stringify(await ai.history(kind, id), null, 2));
+    } else {
+      throw new Error('usage: desk review revert|block|unblock <Defs.X | L-...> "<reason>" | review show <id>');
+    }
   } else if (cmd === "reviewer") {
+    if (!config.HUMAN_REVIEW_TOOL) throw new Error("the human review tool is disabled (reviews are done by AI agents). Set HUMAN_REVIEW_TOOL=1 to use it.");
     const review = new Review(desk, desk.judge);
     const [sub, a, b] = process.argv.slice(3);
     if (sub === "add" && a && (b === "advisor" || b === "maintainer")) {

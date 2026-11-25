@@ -1,5 +1,9 @@
 # Phase 3: programs and review
 
+> **Superseded (change of plan after Phase 7):** there is no human math advisor. The human approval
+> gate described here was replaced by the automated review in [`autonomous-review.md`](autonomous-review.md);
+> the review tool is still in the code but off by default (`HUMAN_REVIEW_TOOL=0`).
+
 All of Phase 3 was built and tested with the mock model provider (no API calls, no cost). The Lean
 parts used the real judge (lite image). Nothing here was compiled with Mathlib: that happens in CI.
 

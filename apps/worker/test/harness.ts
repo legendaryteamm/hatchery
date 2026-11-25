@@ -65,6 +65,9 @@ export function makeAgent(url: string, id: string, provider: ModelProvider, over
     replyMaxTokens: 256,
     killSwitch: () => false,
     log: (m) => logs.push(m),
+    // Phase 1-2 tests are about the warm-up lemmas (the sanity lemmas are leasable too since the
+    // autonomous review; tests that want them say so).
+    program: "core-warmup",
     ...over,
     shouldStop: () => stopped || (userStop?.() ?? false),
   });

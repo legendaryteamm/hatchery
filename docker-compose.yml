@@ -102,6 +102,14 @@ services:
       CONTRIB_TOKEN: ${CONTRIB_TOKEN:-}
       CONTRIB_REPO: ${CONTRIB_REPO:-}
       DEV_LOGIN: ${DEV_LOGIN:-0}
+      # Autonomous review (docs/autonomous-review.md)
+      HUMAN_REVIEW_TOOL: ${HUMAN_REVIEW_TOOL:-0}
+      DEFINITION_REVIEWERS_REQUIRED: ${DEFINITION_REVIEWERS_REQUIRED:-2}
+      STATEMENT_REVIEWERS_REQUIRED: ${STATEMENT_REVIEWERS_REQUIRED:-1}
+      REVIEW_REQUIRE_DISTINCT_MODELS: ${REVIEW_REQUIRE_DISTINCT_MODELS:-0}
+      ADVERSARY_BUDGET_USD: ${ADVERSARY_BUDGET_USD:-2}
+      ADVERSARY_MIN_CHECKS: ${ADVERSARY_MIN_CHECKS:-3}
+      MAX_FLAGS_PER_LOGIN_PER_DAY: ${MAX_FLAGS_PER_LOGIN_PER_DAY:-5}
       TRUST_PROXY: ${TRUST_PROXY:-0}
       # Server only (docs/deploy.md): push bot commits with a repo-scoped deploy key.
       PROOF_PUSH: ${PROOF_PUSH:-0}
@@ -156,6 +164,29 @@ services:
       ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:-}
       AGENT_MODEL: ${AGENT_MODEL:-}
       DECOMPOSER_INTERVAL_SECONDS: ${DECOMPOSER_INTERVAL_SECONDS:-3600}
+      KILL_SWITCH: ${KILL_SWITCH:-0}
+    restart: "no"
+
+  # Opt-in: `--profile agents`. AI review (no human advisor): one reviewer agent per model in
+  # REVIEWER_MODELS (different models where available); they also act as the adversary. SPENDS API MONEY.
+  reviewer:
+    profiles: ["agents"]
+    build:
+      context: .
+      dockerfile: apps/worker/Dockerfile
+    image: hatchery-worker:dev
+    command: ["node", "--import", "tsx", "src/reviewer-main.ts"]
+    depends_on:
+      desk:
+        condition: service_started
+    environment:
+      DESK_URL: http://desk:4200
+      DESK_WORKER_TOKEN: ${DESK_WORKER_TOKEN:-}
+      ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:-}
+      AGENT_MODEL: ${AGENT_MODEL:-}
+      REVIEWER_MODELS: ${REVIEWER_MODELS:-}
+      REVIEWERS_PER_MODEL: ${REVIEWERS_PER_MODEL:-1}
+      ADVERSARY_MAX_TURNS: ${ADVERSARY_MAX_TURNS:-12}
       KILL_SWITCH: ${KILL_SWITCH:-0}
     restart: "no"
 

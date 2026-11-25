@@ -6,6 +6,7 @@
  *   contrib check  --pr N --head SHA --files files.json --proof proof.lean --out result.json
  *                                                    (untrusted run) judge the proof with the runner image
  *   contrib report --result result.json              (trusted run) verify, ask the desk, comment, merge
+ *   contrib flag                                     (review-flag workflow) send an issue's flag to the desk
  *
  * Env: GITHUB_API_URL, GITHUB_REPOSITORY, GITHUB_TOKEN; check: JUDGE_IMAGE (+ judge limits);
  *      report: HEAD_SHA, CHECK_CONCLUSION, PROOF_BOT_TOKEN, AUTO_MERGE, DESK_URL, DESK_CONTRIB_TOKEN, SITE_URL
@@ -15,7 +16,7 @@ import { appendFileSync, existsSync, mkdirSync, readFileSync, writeFileSync } fr
 import { dirname } from "node:path";
 import { fileURLToPath } from "node:url";
 import { loadConfig } from "../src/config.ts";
-import { GitHub, report, resultFrom, validatePrFiles, type FilesCheck } from "../src/contrib.ts";
+import { flagFromIssue, GitHub, report, resultFrom, validatePrFiles, type FilesCheck } from "../src/contrib.ts";
 import { judge } from "../src/judge.ts";
 import { needsMathlib, requestFromRepo } from "../src/repo.ts";
 
@@ -84,8 +85,13 @@ try {
       deskToken: env.DESK_CONTRIB_TOKEN || undefined,
       siteUrl: env.SITE_URL || undefined,
     });
+  } else if (cmd === "flag") {
+    const env = process.env;
+    const event = JSON.parse(readFileSync(env.GITHUB_EVENT_PATH ?? "", "utf8"));
+    const r = await flagFromIssue(event, { github: github(), githubToken: env.GITHUB_TOKEN ?? "", deskUrl: env.DESK_URL || undefined, deskToken: env.DESK_CONTRIB_TOKEN || undefined, siteUrl: env.SITE_URL || undefined });
+    console.log(`${r.result}: ${r.message}`);
   } else {
-    console.error("usage: contrib files|check|report ... (see the header of apps/judge/scripts/contrib.ts)");
+    console.error("usage: contrib files|check|report|flag ... (see the header of apps/judge/scripts/contrib.ts)");
     process.exit(2);
   }
 } catch (err) {

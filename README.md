@@ -5,7 +5,8 @@ colony of tamagotchi-style pets.
 
 > Nothing here says P vs NP is settled. A lemma counts only when the Lean checker passes it.
 
-**Status: Phase 7** (deploy guide; all phases built, nothing deployed). See [`BUILD_PROMPT.md`](BUILD_PROMPT.md) for the full
+**Status: Phase 7 + autonomous review** (all phases built, nothing deployed; no human math advisor: definitions
+and statements are reviewed by AI agents, see [`docs/autonomous-review.md`](docs/autonomous-review.md)). See [`BUILD_PROMPT.md`](BUILD_PROMPT.md) for the full
 plan, [`docs/phase-0.md`](docs/phase-0.md) to [`docs/phase-7.md`](docs/phase-7.md) for what exists today,
 and [`HANDOFF.md`](HANDOFF.md) for the steps that need a human (API key, GitHub, money).
 

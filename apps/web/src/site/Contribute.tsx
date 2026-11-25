@@ -1,7 +1,7 @@
 import { type FormEvent, useCallback, useEffect, useState } from "react";
 import { Link, useSearchParams } from "react-router-dom";
 import { api } from "../api";
-import { dayTime, usd } from "../lib";
+import { dayTime, usd, useApi } from "../lib";
 
 interface AuthConfig { github: boolean; devLogin: boolean }
 interface Me {
@@ -211,6 +211,7 @@ export function AdminPage() {
             </div>
             <OutflowForm onDone={(m) => { setMsg(m); load(); }} />
           </div>
+          <ReviewOverride onDone={setMsg} />
 
           <h2>Outside leases</h2>
           {o.externalLeases.length === 0 ? <p className="muted">None.</p> : (
@@ -283,5 +284,46 @@ function OutflowForm({ onDone }: { onDone: (msg: string) => void }) {
       <button type="submit">Record</button>
       {err && <p className="banner bad" role="alert">{err}</p>}
     </form>
+  );
+}
+
+/** Admin override of the AI review: send back to review, block, unblock. Recorded and public. */
+function ReviewOverride({ onDone }: { onDone: (msg: string) => void }) {
+  const [target, setTarget] = useState("");
+  const [reason, setReason] = useState("");
+  const [err, setErr] = useState<string | null>(null);
+  const defs = useApi<{ id: string; title: string; status: string; draft: boolean }[]>("/definitions").data;
+  const run = async (action: "revert" | "block" | "unblock") => {
+    setErr(null);
+    const kind = target.startsWith("Defs.") ? "definition" : "statement";
+    if (action === "block" && !window.confirm(`Block ${target}? It will not be reviewed or used until an admin unblocks it.`)) return;
+    try {
+      await api.post(`/admin/review/${kind}/${encodeURIComponent(target)}`, { action, reason });
+      onDone(`${target}: ${action === "revert" ? "sent back to review" : action === "block" ? "blocked" : "unblocked and back in review"}.`);
+      setReason("");
+    } catch (x) {
+      setErr((x as Error).message);
+    }
+  };
+  return (
+    <div className="panel">
+      <h2>Review override</h2>
+      <p className="small muted">Definitions and statements are reviewed by AI agents. You can send one back to review, block it (never reviewed or used until unblocked), or unblock it. Each action is public, with your reason.</p>
+      {defs && (
+        <ul className="cards">
+          {defs.map((d) => (
+            <li key={d.id} className="row"><button type="button" className="link" onClick={() => setTarget(d.id)}>{d.id}</button><span className="small muted">{d.draft ? d.status : "approved"}</span></li>
+          ))}
+        </ul>
+      )}
+      <p><label>Definition or statement <input value={target} onChange={(e) => setTarget(e.target.value.trim())} placeholder="Defs.Core.Circuit or L-circ-014" /></label></p>
+      <p><label>Reason (public) <input value={reason} onChange={(e) => setReason(e.target.value)} maxLength={2000} /></label></p>
+      <div className="row" style={{ justifyContent: "flex-start", gap: 8 }}>
+        <button type="button" disabled={!target || reason.length < 3} onClick={() => run("revert")}>Send back to review</button>
+        <button type="button" disabled={!target || reason.length < 3} onClick={() => run("block")}>Block</button>
+        <button type="button" disabled={!target || reason.length < 3} onClick={() => run("unblock")}>Unblock</button>
+      </div>
+      {err && <p className="banner bad" role="alert">{err}</p>}
+    </div>
   );
 }

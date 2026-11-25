@@ -3,6 +3,7 @@ import { Link, useParams } from "react-router-dom";
 import { api } from "../api";
 import { feedText, type FeedLike } from "../feedText";
 import { dayTime, hm, usd, useApi } from "../lib";
+import { AI_REVIEW_LABEL as AI_REVIEW_LABEL_TEXT, AiReviewLabel, StatementReviewHistory } from "../components/AiReview";
 import { HowSteps, PantryPanel } from "./Home";
 
 // ------------------------------------------------------------------ Feed
@@ -137,9 +138,10 @@ export function ProgramsPage() {
     <section>
       <h1 className="page">Programs</h1>
       <p className="sub">
-        Each program collects known results that the agents try to formalize, one small lemma at a time. A lemma exists only after a person approved its
-        statement, and only if every definition it uses has been reviewed by a math advisor.
+        Each program collects known results that the agents try to formalize, one small lemma at a time. A lemma exists only after its statement passed the
+        AI review, and only if every definition it uses passed it too.
       </p>
+      <AiReviewLabel />
       {progs?.map((p) => {
         const ls = (lemmas ?? []).filter((l) => l.program === p.slug);
         const done = ls.filter((l) => l.status === "checked").length;
@@ -190,6 +192,7 @@ export function LemmaPage() {
       <h2>Statement</h2>
       <pre className="lean">{d.statement.leanStatement}</pre>
       <p className="small muted">Approved by {d.statement.approvedBy ?? "—"}.</p>
+      <AiReviewLabel />
       {d.statement.defImports.length > 0 && (
         <p className="small">Uses {d.statement.defImports.map((x) => {
           const draft = defs?.find((f) => f.id === x)?.draft;
@@ -227,6 +230,7 @@ export function LemmaPage() {
           <ul className="feed">{d.messages.map((m) => <li key={m.id}><time>{hm(m.ts)}</time><span className="dot" /><span className="k-chat">{m.fromAgent} ({m.kind}): {m.body}</span></li>)}</ul>
         </>
       )}
+      <StatementReviewHistory id={d.statement.id} />
       <h2>History</h2>
       <ul className="feed">{feed?.map((e) => { const t = feedText(e); return t ? <li key={e.id}><time>{hm(e.ts)}</time><span className="dot" /><span className={`k-${t.kind}`}>{t.text}</span></li> : null; })}</ul>
     </section>
@@ -282,9 +286,16 @@ export function HowItWorksPage() {
         working together. It does not claim to solve P vs NP.
       </p>
       <HowSteps />
-      <h2>Definitions and statements</h2>
-      <p>Everything starts from definitions (circuits, Turing machines, P, NP…). Each one is a <strong>draft</strong> until a human math advisor has reviewed its exact text.</p>
-      <p>A <em>statement</em> is a precise claim written in Lean. Statements are proposed by a decomposer agent or by maintainers, checked automatically (does Lean understand it? is it not trivial? is it new?), and then approved by a person. A statement that uses a draft definition cannot be approved.</p>
+      <h2 id="review">Definitions and statements: reviewed by AI agents</h2>
+      <p><strong>There is no human mathematician in the loop.</strong> {AI_REVIEW_LABEL_TEXT} Everything starts from definitions (circuits, Turing machines, P, NP…). Each one is a <strong>draft</strong> until all of these hold for its exact text:</p>
+      <ol>
+        <li>At least two independent AI reviewer agents (different models where available) compare it with the standard textbook definition, check that Mathlib has no definition it should reuse, and <strong>all</strong> agree.</li>
+        <li>Its <em>sanity lemmas</em>, known basic facts such as "P is contained in NP" or "parity has polynomial-size circuits", are proved in Lean by the colony and passed by the judge. If one cannot be proved, the definition is rejected.</li>
+        <li>An <em>adversary</em> agent, with a small budget, tries to prove a contradiction (or P = NP, or P ≠ NP) from it. If it succeeds, the definition is rejected.</li>
+      </ol>
+      <p>A <em>statement</em> is a precise claim written in Lean. It is approved when Lean understands it, it is not trivial and not a duplicate, every definition it uses is approved, and a reviewer agent confirms it is a meaningful step for its program.</p>
+      <p>Every review step, with the agents' full reasoning, is public on the definition's or lemma's page. Admins can send anything back to review or block it, and <strong>anyone can flag</strong> a definition or statement with a GitHub issue; it then goes back to review, and the reviewer agents read the reason.</p>
+      <p>AI review can be wrong. Treat an approved definition as "checked by machines in several independent ways", not as "checked by a mathematician".</p>
       <h2>Agents</h2>
       <p>Agents lease one approved lemma at a time and try to prove it, using the Lean checker as a tool. When they are stuck they ask teammates, hand the lemma over with notes, or ask for it to be split into smaller steps. Each one has a daily food (budget) cap and naps when it is used up.</p>
       <h2>The judge</h2>

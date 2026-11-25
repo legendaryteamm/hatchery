@@ -182,6 +182,10 @@ be quoted. The tables list what production needs; `.env.example` documents every
 | `ADMIN_GITHUB_HANDLES` | empty | GitHub logins allowed into `/admin` (comma-separated) |
 | `MATHLIB_LEMMAS_ENABLED` | 0 | 1 only after the Mathlib gate (section 6) |
 
+**AI review** (no human advisor): `REVIEWER_MODELS` (e.g. `claude-opus-5-5,claude-sonnet-5-5`),
+`REVIEW_REQUIRE_DISTINCT_MODELS=1` when that list has two or more models, `ADVERSARY_BUDGET_USD`
+(default 2), `DEFINITION_REVIEWERS_REQUIRED` (default 2, minimum 2). Leave `HUMAN_REVIEW_TOOL=0`.
+
 **Agents** (only when you turn them on, section 8): `ANTHROPIC_API_KEY`, `AGENT_MODEL`
 (e.g. `claude-opus-5-5`), `WORKER_COUNT`, `AGENT_MAX_TURNS`, `WORKER_MAX_RUN_USD`.
 
@@ -245,8 +249,10 @@ and the Pantry page says "Development pantry". Then:
 
 1. **Admin access:** set `ADMIN_GITHUB_HANDLES` and the GitHub OAuth app (HANDOFF.md), restart the
    desk (`dc up -d desk`), sign in at `/join`, open `/admin`.
-2. **Math advisor:** `dc exec desk node --import tsx src/cli.ts reviewer add "Name" advisor` prints a
-   one-time link; send it privately. Definitions stay DRAFT until the advisor approves them.
+2. **AI review:** definitions stay DRAFT until the automated review approves them
+   ([`docs/autonomous-review.md`](autonomous-review.md)): reviewer agents, proved sanity lemmas and an
+   adversary. That starts when the agents are on (section 8). There is no human math advisor; the
+   human review tool stays off (`HUMAN_REVIEW_TOOL=0`).
 3. **Contributor CI:** set the repository's Actions secrets and variables (HANDOFF.md) so pull
    requests are judged and, if you choose, merged.
 
@@ -264,8 +270,8 @@ Set a **spending limit in the Anthropic Console** as well, as a hard ceiling ind
 project. Then:
 
 ```bash
-# in .env: ANTHROPIC_API_KEY, AGENT_MODEL, WORKER_COUNT (start with 2)
-dc --profile agents up -d worker      # and later: decomposer
+# in .env: ANTHROPIC_API_KEY, AGENT_MODEL, WORKER_COUNT (start with 2), REVIEWER_MODELS
+dc --profile agents up -d worker reviewer   # provers and the AI review; later also: decomposer
 dc logs -f worker
 ```
 
@@ -283,7 +289,7 @@ whichever is at hand:
 | `dc exec desk node --import tsx src/cli.ts kill-switch on` | same switch, from the server | `kill-switch off` |
 | `curl -X POST https://<domain>/api/admin/kill-switch -H "Authorization: Bearer $ADMIN_TOKEN" -H 'content-type: application/json' -d '{"on":true,"by":"<you>"}'` | same switch, from a script | `{"on":false,...}` |
 | `KILL_SWITCH=1` in `.env`, then `dc up -d desk worker` | cannot be undone from the site | remove it, `dc up -d desk worker` |
-| `dc stop worker decomposer` | stops the agent processes themselves | `dc --profile agents up -d worker` |
+| `dc stop worker reviewer decomposer` | stops the agent processes themselves | `dc --profile agents up -d worker reviewer` |
 | Revoke the API key in the Anthropic Console | last resort: no call can succeed | new key in `.env` |
 
 The site shows a "Paused" banner while the switch is on.
@@ -405,13 +411,13 @@ git fetch && git log --oneline HEAD..origin/main     # read what changes
 dc stop worker decomposer                             # let agents finish cleanly (optional)
 git pull --ff-only                                    # the bot's commits are already on origin
 dc build desk web worker judge
-dc up -d desk web judge && dc --profile agents up -d worker
+dc up -d desk web judge && dc --profile agents up -d worker reviewer
 curl -s https://$SITE_DOMAIN/api/health | jq .judge
 ```
 
 - **Changed `lean/Defs/` or `lean-toolchain`?** Rebuild `lean-runner` too (`dc build lean-runner`,
   then `dc up -d judge`), or the desk refuses work because the judge is stale. Changed definitions go
-  back to DRAFT until the math advisor reviews them again.
+  back to DRAFT until the AI review approves them again (and their sanity lemmas are re-checked).
 - **Mathlib or Lean version bump:** deploy only a commit whose `full` CI job is green; every checked
   proof is re-checked automatically after the switch.
 - **Database migrations** run automatically when the desk starts. Take a backup first

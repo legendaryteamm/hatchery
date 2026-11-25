@@ -1,0 +1,39 @@
+# Public review flags (docs/autonomous-review.md): an issue made from the "review-flag" form sends a
+# definition or statement back to the AI review. The issue body is untrusted text: it is only read by
+# the TypeScript in apps/judge/src/contrib.ts (parseFlagIssue), never put into a shell command.
+#
+# Settings (shared with contrib-merge.yml): vars.DESK_URL, vars.SITE_URL, secrets.DESK_CONTRIB_TOKEN.
+name: review-flag
+
+on:
+  issues:
+    types: [opened, labeled]
+
+permissions:
+  contents: read
+  issues: write
+
+jobs:
+  flag:
+    if: contains(github.event.issue.labels.*.name, 'review-flag')
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4.2.2
+        with:
+          persist-credentials: false
+      - uses: pnpm/action-setup@v4.0.0
+        with:
+          version: 9.15.9
+      - uses: actions/setup-node@v4.1.0
+        with:
+          node-version: 20.19.5
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile
+      - name: Send the flag to the desk and answer on the issue
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+          DESK_URL: ${{ vars.DESK_URL }}
+          DESK_CONTRIB_TOKEN: ${{ secrets.DESK_CONTRIB_TOKEN }}
+          SITE_URL: ${{ vars.SITE_URL }}
+        run: pnpm --filter @hatchery/judge contrib flag

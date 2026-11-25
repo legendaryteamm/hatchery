@@ -237,3 +237,13 @@ input:not([type]), input[type="text"] {
 }
 input:not([type]):focus-visible, input[type="text"]:focus-visible { outline: 3px solid var(--sky); outline-offset: 1px; }
 code { overflow-wrap: anywhere; }
+
+/* AI review label and history */
+.ailabel { background: var(--surface); border: 2px dashed var(--line); border-radius: 12px; padding: 8px 12px; margin: 10px 0; }
+.round { margin-bottom: 14px; }
+.steps-list { list-style: none; padding: 0; margin: 0; }
+.steps-list .step { border-left: 4px solid var(--line); padding: 4px 0 4px 12px; margin: 10px 0; }
+.steps-list .step.v-pass { border-left-color: var(--mint); }
+.steps-list .step.v-fail { border-left-color: var(--pink); }
+.steps-list p { margin: 4px 0; }
+pre.reasoning { white-space: pre-wrap; overflow-wrap: anywhere; font-size: .9rem; background: var(--bg); padding: 10px; border-radius: 10px; }

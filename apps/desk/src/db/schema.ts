@@ -63,19 +63,24 @@ export const statements = pgTable("statements", {
   check: jsonb("check"),
   rationale: text("rationale").notNull().default(""),
   rejectReason: text("reject_reason"),
+  /** Sanity lemmas: the definition modules this known basic fact tests ("sanity_for:" header). */
+  sanityFor: text("sanity_for").array().notNull().default(sql`'{}'::text[]`),
+  /** Blocked by an admin: never auto-reviewed until unblocked. */
+  blockedAt: ts("blocked_at"),
   /** Set when proposed as a split of another lemma. */
   parentId: text("parent_id"),
   proposedAt: ts("proposed_at"),
   approvedAt: ts("approved_at"),
 });
 
-export const definitionStatus = pgEnum("definition_status", ["draft", "approved", "changes_requested"]);
+/** draft = in review; rejected = the automated review failed; blocked = an admin blocked it (never auto-reviewed until unblocked). */
+export const definitionStatus = pgEnum("definition_status", ["draft", "approved", "changes_requested", "rejected", "blocked"]);
 export const reviewerRole = pgEnum("reviewer_role", ["advisor", "maintainer"]);
 export const reviewDecision = pgEnum("review_decision", ["approve", "request_changes", "reject", "comment"]);
 
 /**
  * ext (Phase 3): one row per definition module (`lean/Defs/.../*.lean`). It is a DRAFT unless an
- * advisor approved exactly the current source (reviewed_sha256 = source_sha256) and every
+ * review (AI agents; or a human with HUMAN_REVIEW_TOOL=1) approved exactly the current source (reviewed_sha256 = source_sha256) and every
  * definition module it imports is approved too.
  */
 export const definitions = pgTable("definitions", {
@@ -93,6 +98,11 @@ export const definitions = pgTable("definitions", {
   reviewedAt: ts("reviewed_at"),
   updatedAt: ts("updated_at").notNull().defaultNow(),
   removed: boolean("removed").notNull().default(false),
+  /** How the current status was decided: ai | human | admin (autonomous review). */
+  reviewedVia: text("reviewed_via"),
+  /** Goals the adversary tries to prove from this module, besides False ("adversary:" header). */
+  adversaryGoals: text("adversary_goals").array().notNull().default(sql`'{}'::text[]`),
+  blockedReason: text("blocked_reason"),
 });
 
 /** ext (Phase 3): people who review definitions and statements (no developer account needed). */
@@ -359,3 +369,62 @@ export const contributions = pgTable(
   },
   (t) => [uniqueIndex("contributions_pr_head_idx").on(t.prNumber, t.headSha)],
 );
+
+// ---------------------------------------------------------------- Autonomous review (no human advisor)
+
+/**
+ * One review of one exact source text (definition module or statement). Every step and its
+ * reasoning is kept, and shown on the site.
+ */
+export const reviewRounds = pgTable(
+  "review_rounds",
+  {
+    id: serial("id").primaryKey(),
+    targetKind: text("target_kind").notNull(), // definition | statement
+    targetId: text("target_id").notNull(),
+    targetSha256: text("target_sha256").notNull(),
+    status: text("status").notNull().default("running"), // running | approved | rejected | superseded
+    trigger: text("trigger").notNull(), // new | changed | flag | admin | dependency | human
+    reason: text("reason").notNull().default(""),
+    startedAt: ts("started_at").notNull().defaultNow(),
+    finishedAt: ts("finished_at"),
+    /** Adversary bookkeeping: judge checks run and money spent in this round. */
+    adversaryChecks: integer("adversary_checks").notNull().default(0),
+    adversaryDone: boolean("adversary_done").notNull().default(false),
+    adversarySpentUsd: usd("adversary_spent_usd").notNull().default("0"),
+    /** The adversary agent working on this round, and until when (one at a time). */
+    adversaryAgent: text("adversary_agent"),
+    adversaryUntil: ts("adversary_until"),
+  },
+  (t) => [index("review_rounds_target_idx").on(t.targetKind, t.targetId)],
+);
+
+export const reviewSteps = pgTable(
+  "review_steps",
+  {
+    id: serial("id").primaryKey(),
+    roundId: integer("round_id").notNull().references(() => reviewRounds.id),
+    ts: ts("ts").notNull().defaultNow(),
+    kind: text("kind").notNull(), // reviewer | sanity | adversary | filter | definitions | flag | admin | human
+    actor: text("actor").notNull(), // agent id, "desk", "github:<login>", reviewer name
+    model: text("model"),
+    verdict: text("verdict").notNull(), // pass | fail | info
+    summary: text("summary").notNull().default(""),
+    reasoning: text("reasoning").notNull().default(""),
+    details: jsonb("details").notNull().default({}),
+    costUsd: usd("cost_usd").notNull().default("0"),
+  },
+  (t) => [index("review_steps_round_idx").on(t.roundId)],
+);
+
+/** Public flags (GitHub issues) that sent a definition or statement back to review. */
+export const reviewFlags = pgTable("review_flags", {
+  id: serial("id").primaryKey(),
+  ts: ts("ts").notNull().defaultNow(),
+  issueNumber: integer("issue_number").notNull().unique(),
+  login: text("login").notNull(),
+  targetKind: text("target_kind").notNull(),
+  targetId: text("target_id").notNull(),
+  reason: text("reason").notNull(),
+  roundId: integer("round_id"),
+});

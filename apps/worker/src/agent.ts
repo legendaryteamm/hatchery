@@ -30,6 +30,8 @@ export interface AgentOptions {
   /** Test hook / graceful shutdown: stop at the next loop iteration. */
   shouldStop?: () => boolean;
   log: (msg: string, extra?: Record<string, unknown>) => void;
+  /** Only lease lemmas of this program (e.g. "definition-sanity"); default: any. */
+  program?: string;
 }
 
 type AttemptOutcome =
@@ -101,7 +103,7 @@ export class Agent {
 
       let ctx: LeaseContext | null;
       try {
-        ctx = await this.desk.lease();
+        ctx = await this.desk.lease(this.opts.program);
       } catch (err) {
         if (err instanceof DeskHttpError && err.status === 429) continue; // became blocked meanwhile: next iteration sleeps
         if (err instanceof DeskHttpError && err.status === 503) {

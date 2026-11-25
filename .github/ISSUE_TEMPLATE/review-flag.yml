@@ -1,0 +1,26 @@
+name: Flag a definition or statement for re-review
+description: Something looks wrong in a definition or a lemma statement. It goes back to the AI review.
+title: "Review flag: "
+labels: ["review-flag"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Definitions and statements in this project are reviewed by AI agents, not by a human mathematician.
+        If one looks wrong, flag it here: it goes back to review, and the reviewer agents read your reason.
+        Please be specific (what is wrong, and what the textbook says). At most 5 flags per person per day.
+  - type: input
+    id: target
+    attributes:
+      label: What should be re-reviewed?
+      description: A definition module (e.g. Defs.Core.Circuit) or a statement id (e.g. L-circ-014).
+      placeholder: Defs.Core.Circuit
+    validations:
+      required: true
+  - type: textarea
+    id: reason
+    attributes:
+      label: Why?
+      description: What is wrong, with a reference if you have one.
+    validations:
+      required: true

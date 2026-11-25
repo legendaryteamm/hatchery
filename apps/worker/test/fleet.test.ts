@@ -12,7 +12,9 @@ import * as s from "../../desk/src/db/schema.ts";
 import { WORKER_TOKEN } from "../../desk/test/helpers.ts";
 import { CALL_MICROS, call, FakeProvider, text } from "./fake-provider.ts";
 import { ADMIN_TOKEN, makeAgent, startDesk, until } from "./harness.ts";
+import { AiReview } from "../../desk/src/ai-review.ts";
 import { Review } from "../../desk/src/review.ts";
+import { ReviewerAgent } from "../src/reviewer.ts";
 import { Decomposer } from "../src/decomposer.ts";
 import { DeskClient } from "../src/desk-client.ts";
 
@@ -253,10 +255,10 @@ describe("fleet: lease expiry and recovery", () => {
   });
 });
 
-describe("phase 3: split request -> decomposer -> human review -> lease", () => {
-  it("only statements a human approved (with reviewed definitions) are ever leased", async () => {
+describe("split request -> decomposer -> AI review -> lease (no human in the loop)", () => {
+  it("only statements the AI review approved (over approved definitions) are ever leased", async () => {
     const { db, url, desk: d } = await desk();
-    await db.update(s.lemmas).set({ status: "checked" }).where(sql`${s.lemmas.id} <> 'L-core-005'`);
+    await db.update(s.lemmas).set({ status: "checked" }).where(sql`${s.lemmas.id} like 'L-core-%' and ${s.lemmas.id} <> 'L-core-005'`);
     // 1. A stuck agent asks for a split, then gives up its attempt.
     const stuck = makeAgent(url, "agent-stuck", new FakeProvider(({ turn }) =>
       turn === 0 ? [call("request_split", { reason: "needs a lemma about sums of List.range first" })] : [call("submit_proof", { source: "wrong", notes: "split requested" })]), { maxLemmas: 1 });
@@ -268,7 +270,7 @@ describe("phase 3: split request -> decomposer -> human review -> lease", () => 
     const decomposerModel = new FakeProvider(({ turn, transcript }) => {
       if (turn > 0) return [call("finish", { summary: "done" })];
       const id = Number(/split request #(\d+)/.exec(transcript)?.[1]);
-      return [call("propose_statement", { program: "proof-complexity", title: "PHP(2,1) is unsatisfiable", imports: ["Defs.Core.Resolution"], prop: "Hatchery.Defs.CNF.Unsat (Hatchery.Defs.php 2 1)", rationale: "smallest pigeonhole case", parent_id: "L-core-005", split_request_id: id })];
+      return [call("propose_statement", { program: "proof-complexity", title: "PHP(3,2) is unsatisfiable", imports: ["Defs.Core.Resolution"], prop: "Hatchery.Defs.CNF.Unsat (Hatchery.Defs.php 3 2)", rationale: "small pigeonhole case", parent_id: "L-core-005", split_request_id: id })];
     });
     const dec = new Decomposer(new DeskClient(url, WORKER_TOKEN, "decomposer-1"), decomposerModel, { maxTurns: 3, intervalMs: 0, sleepPollMs: 10, maxSessions: 1, killSwitch: () => false, log: () => {} });
     expect((await dec.run()).proposed).toEqual(["L-pc-001"]);
@@ -276,28 +278,33 @@ describe("phase 3: split request -> decomposer -> human review -> lease", () => 
 
     // 3. Not leasable while proposed and while its definition is a draft.
     await db.update(s.lemmas).set({ status: "checked" }).where(eq(s.lemmas.id, "L-core-005")); // (someone else solved it)
-    const worker = () => makeAgent(url, "agent-worker", new FakeProvider(({ leanName }) => [call("submit_proof", { source: right(leanName), notes: "" })]));
-    expect((await worker().agent.run()).leased).toBe(0);
+    const worker = (program?: string) => makeAgent(url, "agent-worker", new FakeProvider(({ leanName }) => [call("submit_proof", { source: right(leanName), notes: "" })]), { program });
+    expect((await worker("proof-complexity").agent.run()).leased).toBe(0);
     expect(await db.select().from(s.lemmas).where(eq(s.lemmas.id, "L-pc-001"))).toEqual([]); // no lemma before approval
 
-    // 4. A math advisor reviews in the browser (HTTP API with invite + cookie).
-    const review = new Review(d, d.judge);
-    const { inviteUrl } = await review.addReviewer("Dr. Ada", "advisor");
-    const join = await fetch(`${url}/review/join`, { method: "POST", headers: { "content-type": "application/json", "x-hatchery-review": "1" }, body: JSON.stringify({ token: new URL(inviteUrl).hash.slice(1) }) });
-    const cookie = join.headers.get("set-cookie")!.split(";")[0]!;
-    const get = async (path: string) => (await fetch(`${url}${path}`, { headers: { cookie } })).json();
-    const post = (path: string, body: unknown) => fetch(`${url}${path}`, { method: "POST", headers: { cookie, "content-type": "application/json", "x-hatchery-review": "1" }, body: JSON.stringify(body) });
-    const st = await get("/review/statements/L-pc-001");
-    expect(st).toMatchObject({ canApprove: false, usesDraftDefinition: true, parentId: "L-core-005" });
-    expect((await post("/review/statements/L-pc-001", { decision: "approve", comment: "", sha256: st.sourceSha256 })).status).toBe(409);
-    const def = await get("/review/definitions/Defs.Core.Resolution");
-    expect((await post("/review/definitions/Defs.Core.Resolution", { decision: "approve", comment: "standard resolution", sha256: def.sourceSha256 })).status).toBe(200);
-    expect((await post("/review/statements/L-pc-001", { decision: "approve", comment: "good first step", sha256: st.sourceSha256 })).status).toBe(200);
+    // 4. The automated review: provers prove the sanity lemmas, two reviewer agents agree, the adversary gives up.
+    const ai = new AiReview(d, new Review(d, d.judge));
+    await ai.tick();
+    const sanity = await makeAgent(url, "agent-sanity", new FakeProvider(({ leanName }) => [call("submit_proof", { source: right(leanName), notes: "" })]), { program: "definition-sanity" }).agent.run();
+    expect(sanity.checked.sort()).toEqual(["L-sanity-001", "L-sanity-002", "L-sanity-003", "L-sanity-004", "L-sanity-005", "L-sanity-006", "L-sanity-007", "L-sanity-008"]); // not the Mathlib ones (lite judge)
+    const reviewerModel = () => new FakeProvider(({ tools, turn }) => {
+      if (tools.includes("submit_review")) return [call("submit_review", { matches_textbook: true, textbook_reference: "Krajíček, Def. 5.1", differences: "", mathlib_alternative: "", meaningful: true, believed_true: true, summary: "Agrees.", reasoning: "Compared clause by clause." })];
+      return turn < 3 ? [call("lean_check", { goal_index: 0, source: "import Statements.L_adv_001\ntheorem Proof.L_adv_001 : Statement.L_adv_001 := by simp" })] : [call("give_up", { notes: "no contradiction found" })];
+    });
+    const reviewer = (id: string) => new ReviewerAgent(new DeskClient(url, WORKER_TOKEN, id), reviewerModel(), { maxAdversaryTurns: 6, idleMs: 10, sleepPollMs: 10, maxTasks: 0, exitWhenIdle: true, killSwitch: () => false, log: () => {} });
+    for (let i = 0; i < 6; i++) {
+      await reviewer("reviewer-1").run();
+      await reviewer("reviewer-2").run();
+      await ai.tick();
+    }
+    expect((await db.select().from(s.definitions).where(eq(s.definitions.id, "Defs.Core.Resolution")))[0]).toMatchObject({ status: "approved", reviewedVia: "ai" });
+    expect((await db.select().from(s.statements).where(eq(s.statements.id, "L-pc-001")))[0]).toMatchObject({ status: "approved", approvedBy: expect.stringMatching(/^AI review/) });
+    expect((await db.select().from(s.definitions).where(eq(s.definitions.id, "Defs.Mathlib.Complexity")))[0]!.status).toBe("draft"); // its sanity lemmas need Mathlib
 
     // 5. Now it is leased and proved.
-    const r = await worker().agent.run();
+    const r = await worker("proof-complexity").agent.run();
     expect(r.checked).toEqual(["L-pc-001"]);
     const ev = (await db.select().from(s.events)).map((e) => e.type);
-    for (const t of ["split_requested", "statement_proposed", "definition_reviewed", "statement_approved", "leased", "checked"]) expect(ev).toContain(t);
+    for (const t of ["split_requested", "statement_proposed", "review_started", "review_step", "definition_reviewed", "statement_approved", "leased", "checked"]) expect(ev).toContain(t);
   });
 });

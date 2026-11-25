@@ -9,6 +9,10 @@ export interface ScriptInput {
   lastResult: string;
   /** All text of the conversation (user + tool results), for "did I get a hint?" checks. */
   transcript: string;
+  /** Names of the tools offered in this call (e.g. submit_review, lean_check). */
+  tools: string[];
+  /** The system prompt. */
+  system: string;
 }
 
 /**
@@ -35,6 +39,8 @@ export class FakeProvider implements ModelProvider {
       turn: req.messages.filter((m) => m.role === "assistant").length,
       lastResult: last?.type === "tool_result" ? last.content : "",
       transcript: texts.join("\n"),
+      tools: req.tools.map((t) => t.name),
+      system: req.system,
     });
     return {
       content,

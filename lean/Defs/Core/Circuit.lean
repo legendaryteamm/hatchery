@@ -4,8 +4,10 @@
 title: Boolean circuits, AC0, parity, monotone circuits
 summary: A Boolean circuit on n inputs is a list of gates. Wires 0 … n-1 are the inputs; gate number k is wire n + k and may only read wires with smaller numbers (so the circuit has no cycles). AND and OR gates have unbounded fan-in (any number of inputs, including none: an empty AND is true, an empty OR is false); NOT has fan-in 1. The output is the last gate. Size is the number of gates. Depth is the number of gates on the longest input-to-output path. A family of circuits (one for each input length n) is in AC0 if its size is bounded by a polynomial in n and its depth by a constant. A circuit is monotone if it has no NOT gates. Parity of n bits is true when an odd number of them are true.
 
-Review status lives in the review tool, not in this file. Until a math advisor approves it, this
-definition is a DRAFT and no statement that uses it can be approved.
+Review status lives in the desk, not in this file. This definition is a DRAFT until the automated
+review approves it (docs/autonomous-review.md): reviewer agents compare it with the textbook
+definition, its sanity lemmas (lean/Statements, "sanity_for") are proved, and an adversary agent
+fails to prove False (or the goals below) from it. Reviewed by AI agents, not by a human mathematician.
 -/
 namespace Hatchery.Defs
 

@@ -4,8 +4,10 @@
 title: Boolean formulas
 summary: A Boolean formula over n input variables is a tree built from the variables, the constants true and false, NOT, AND and OR. Every gate has fan-out 1 (it is used once), which is what separates formulas from circuits. Size counts the AND/OR/NOT gates; depth is the length of the longest path from the root to a leaf.
 
-Review status lives in the review tool, not in this file. Until a math advisor approves it, this
-definition is a DRAFT and no statement that uses it can be approved.
+Review status lives in the desk, not in this file. This definition is a DRAFT until the automated
+review approves it (docs/autonomous-review.md): reviewer agents compare it with the textbook
+definition, its sanity lemmas (lean/Statements, "sanity_for") are proved, and an adversary agent
+fails to prove False (or the goals below) from it. Reviewed by AI agents, not by a human mathematician.
 -/
 namespace Hatchery.Defs
 

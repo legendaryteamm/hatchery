@@ -64,8 +64,8 @@ describe("the review tool", () => {
     fakeDesk({ "GET /review/queue": [200, { definitions: [draftCircuit, { ...draftCircuit, id: "Defs.Core.Formula", title: "Boolean formulas", status: "approved", draft: false }], statements: [blockedStatement] }] });
     at("/review", "/review", <Queue />);
     expect(await screen.findByText("Boolean circuits")).toBeTruthy();
-    expect(screen.getByText("Draft")).toBeTruthy();
-    expect(screen.getByText("Reviewed")).toBeTruthy();
+    expect(screen.getByText("Draft · in AI review")).toBeTruthy();
+    expect(screen.getByText("Approved by AI review")).toBeTruthy();
     expect(screen.getByText("(1 of 2 still drafts)")).toBeTruthy();
     expect(screen.getByText("Blocked")).toBeTruthy();
     expect(screen.getByText(/uses a draft definition: Defs.Core.Circuit is a draft/)).toBeTruthy();
@@ -78,7 +78,7 @@ describe("the review tool", () => {
     };
     fakeDesk(routes);
     at("/review/definitions/Defs.Core.Circuit", "/review/definitions/:id", <DefinitionReview />);
-    expect(await screen.findByText(/Draft definition\./)).toBeTruthy();
+    expect(await screen.findByText(/Not approved\./)).toBeTruthy();
     expect((screen.getByRole("radio", { name: /Approve/ }) as HTMLInputElement).disabled).toBe(true);
     expect(screen.getByText(/only a math advisor can approve a definition/)).toBeTruthy();
     cleanup();
@@ -138,6 +138,7 @@ describe("public pages show drafts as drafts", () => {
     at("/definitions", "/definitions", <PublicDefinitions />);
     expect(await screen.findByText("Boolean circuits")).toBeTruthy();
     const items = screen.getAllByRole("listitem").map((li) => li.textContent);
-    expect(items).toEqual([expect.stringMatching(/^Boolean circuitsDraft/), expect.stringMatching(/^Boolean formulasReviewed/)]);
+    expect(items).toEqual([expect.stringMatching(/^Boolean circuitsDraft · in AI review/), expect.stringMatching(/^Boolean formulasApproved by AI review/)]);
+    expect(screen.getByText("Reviewed by AI agents, not by a human mathematician.")).toBeTruthy();
   });
 });

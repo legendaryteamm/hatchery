@@ -28,7 +28,7 @@ export const api = {
   del: <T,>(path: string) => request<T>("DELETE", path),
 };
 
-export type DefinitionStatus = "draft" | "approved" | "changes_requested";
+export type DefinitionStatus = "draft" | "approved" | "changes_requested" | "rejected" | "blocked";
 export type Decision = "approve" | "request_changes" | "reject" | "comment";
 
 export interface Me {

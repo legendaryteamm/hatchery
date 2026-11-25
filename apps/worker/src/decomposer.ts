@@ -1,8 +1,8 @@
 /**
  * The decomposer (BUILD_PROMPT.md section 7): proposes new statements for the research programs and
  * answers split requests. Everything it proposes is checked automatically (well-formed, elaborates
- * with sorry, not trivial, not a duplicate) and then waits for a HUMAN to approve it. It can never
- * make anything leasable by itself.
+ * with sorry, not trivial, not a duplicate) and then waits for the AI review (reviewer agents; see
+ * docs/autonomous-review.md). It can never make anything leasable by itself.
  */
 import { MESSAGE_LIMITS, type SleepReason } from "@hatchery/shared";
 import { DeskHttpError, type DecomposerContext, type DeskClient } from "./desk-client.ts";
@@ -13,13 +13,13 @@ const obj = (properties: Record<string, unknown>) => ({ type: "object", properti
 export const DECOMPOSER_TOOLS: ToolDef[] = [
   {
     name: "propose_statement",
-    description: "Propose one Lean statement. The desk wraps it as `def Statement.<id> : Prop := <prop>` with your imports, checks it, and puts it in the human review queue.",
+    description: "Propose one Lean statement. The desk wraps it as `def Statement.<id> : Prop := <prop>` with your imports, checks it, and puts it in the AI review queue.",
     inputSchema: obj({
       program: { type: "string", description: "Program slug, e.g. circuit-lower-bounds." },
       title: { type: "string", description: "Short plain-English title." },
       imports: { type: "array", items: { type: "string" }, description: "Modules to import: Defs.* (the project's definitions) and, only if the judge has it, Mathlib.*." },
       prop: { type: "string", description: "The proposition (a Lean term of type Prop), using fully qualified names such as Hatchery.Defs.InAC0." },
-      rationale: { type: "string", description: "Why this statement is a useful, true, non-trivial step (for the human reviewer)." },
+      rationale: { type: "string", description: "Why this statement is a useful, true, non-trivial step (read by the AI reviewer agents)." },
       parent_id: { type: "string", description: "Lemma id this is a sub-step of (for a split request), or empty." },
       split_request_id: { type: "integer", description: "The split request it answers, or 0." },
     }),
@@ -36,7 +36,8 @@ export const DECOMPOSER_SYSTEM = `You are the decomposer of The Hatchery, a publ
 Rules:
 - Propose TRUE, NON-TRIVIAL statements that are real steps towards the program's known results. Never propose open problems (such as P ≠ NP) as lemmas.
 - Every proposal is automatically rejected if it does not elaborate, if trivial/decide/simp/omega closes it, or if it duplicates an existing statement.
-- A human reviewer approves each statement. Statements that use a DRAFT definition cannot be approved until a math advisor reviews that definition, so prefer reviewed definitions; you may still propose statements over drafts.
+- There is no human reviewer: independent AI reviewer agents decide whether each statement is a meaningful step for its program. Statements that use a DRAFT definition cannot be approved until that definition passes its own automated review, so prefer approved definitions; you may still propose statements over drafts.
+- Prefer Mathlib's definitions and the project's approved definitions; never invent a new definition inside a statement.
 - Use only the provided definitions (fully qualified, e.g. Hatchery.Defs.Circuit) and Lean core. Mathlib only if a definition already imports it.
 - Answer open split requests first: propose 2 to 4 smaller statements with parent_id and split_request_id set.
 - Be concise. Propose at most 5 statements per session, then call finish.`;
@@ -123,7 +124,7 @@ export class Decomposer {
           results.push({
             type: "tool_result",
             toolUseId: c.id,
-            content: r.status === "rejected" ? `${r.id} was auto-rejected: ${r.rejectReason}` : `${r.id} is in the human review queue.`,
+            content: r.status === "rejected" ? `${r.id} was auto-rejected: ${r.rejectReason}` : `${r.id} is in the AI review queue.`,
             isError: r.status === "rejected",
           });
         } catch (err) {

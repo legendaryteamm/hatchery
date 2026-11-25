@@ -22,9 +22,11 @@ There is no Anthropic API key yet. Every test and dev run uses the scripted mock
 - **Bot commits stay in a throwaway sandbox clone.** Writing to the real checkout needs an explicit real
   run: `PROOF_COMMIT_MODE=commit` + `HATCHERY_REAL_RUN=1` (+ `REPO_MOUNT_MODE=rw` in Docker). The test
   suite fails if a run changes the checkout. Pushing is server-only, by the proof bot, `lean/Proofs/` only.
-- **Definitions are DRAFT until a human math advisor approves them.** Approvals come from real
-  reviewers only: create reviewers and approve definitions or statements in throwaway test databases,
-  never in the dev database.
+- **There is no human math advisor** (change of plan after Phase 7): definitions and statements are
+  approved only by the automated review (docs/autonomous-review.md): agreeing reviewer agents, proved
+  sanity lemmas, a failed adversary. The site labels them "Reviewed by AI agents, not by a human
+  mathematician". The human review tool stays in the code, off (`HUMAN_REVIEW_TOOL=0`). Record review
+  verdicts or overrides only in throwaway test databases, never in the dev database.
 - **Honesty rules** (BUILD_PROMPT.md section 1) apply to code, site copy and docs.
 - **A flaky test is a bug.** Find the root cause, fix it, and prove the fix with repeated runs (20 in
   a row for the fleet tests); "passes on rerun" is not an answer.

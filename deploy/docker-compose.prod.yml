@@ -58,6 +58,10 @@ services:
     restart: unless-stopped
     logging: *logging
 
+  reviewer:
+    restart: unless-stopped
+    logging: *logging
+
   indexer:
     logging: *logging
 

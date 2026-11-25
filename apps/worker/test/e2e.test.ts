@@ -62,7 +62,7 @@ describe("one agent, end to end (scripted model, real judge)", () => {
     });
     const logs: string[] = [];
     const agent = new Agent(new DeskClient(deskUrl, WORKER_TOKEN, "agent-test-1"), provider, {
-      maxTurns: 6, maxRunUsd: 1, maxLemmas: 0, exitWhenIdle: true, idleSleepMs: 0, sleepPollMs: 10, replyWaitMs: 0, replyMaxTokens: 256,
+      maxTurns: 6, maxRunUsd: 1, maxLemmas: 0, exitWhenIdle: true, idleSleepMs: 0, sleepPollMs: 10, replyWaitMs: 0, replyMaxTokens: 256, program: "core-warmup",
       killSwitch: () => false, log: (m) => logs.push(m),
     });
     const result = await agent.run();
@@ -71,7 +71,8 @@ describe("one agent, end to end (scripted model, real judge)", () => {
 
     const db = fresh.db;
     const lemmaRows = Object.fromEntries((await db.select().from(schema.lemmas)).map((l) => [l.id, l.status]));
-    expect(lemmaRows).toEqual({ "L-core-001": "checked", "L-core-002": "checked", "L-core-003": "checked", "L-core-004": "checked", "L-core-005": "open" });
+    expect(Object.fromEntries(Object.entries(lemmaRows).filter(([id]) => id.startsWith("L-core-")))).toEqual({ "L-core-001": "checked", "L-core-002": "checked", "L-core-003": "checked", "L-core-004": "checked", "L-core-005": "open" });
+    expect(Object.entries(lemmaRows).filter(([id]) => id.startsWith("L-sanity-")).every(([, s]) => s === "open")).toBe(true); // other program
 
     const att = await db.select().from(schema.attempts).orderBy(schema.attempts.id);
     expect(att.length).toBe(7); // 4 successful + 3 failed on L-core-005

@@ -10,7 +10,8 @@
     "decomposer": "tsx src/decomposer-main.ts",
     "test": "vitest run",
     "typecheck": "tsc -p tsconfig.json",
-    "mock:colony": "tsx scripts/mock-colony.ts"
+    "mock:colony": "tsx scripts/mock-colony.ts",
+    "reviewer": "tsx src/reviewer-main.ts"
   },
   "dependencies": {
     "@anthropic-ai/sdk": "1.8.0",

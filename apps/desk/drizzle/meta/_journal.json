@@ -36,6 +36,13 @@
       "when": 1795617607327,
       "tag": "0004_phase6",
       "breakpoints": true
+    },
+    {
+      "idx": 5,
+      "version": "7",
+      "when": 1795620079950,
+      "tag": "0005_autonomous_review",
+      "breakpoints": true
     }
   ]
 }

@@ -66,6 +66,14 @@ export const PROGRAMS = [
     description: "Known results in proof complexity: Haken's lower bound for the pigeonhole principle in resolution, the Ben-Sasson–Wigderson size–width tradeoff.",
   },
   {
+    slug: "definition-sanity",
+    idPrefix: "sanity",
+    sort: 5,
+    title: "Definition sanity checks",
+    description:
+      "Known basic facts that must be provable from the project's definitions (for example P ⊆ NP, or that parity has polynomial-size circuits). A definition is approved only after all of its sanity lemmas are proved.",
+  },
+  {
     slug: "barriers",
     idPrefix: "bar",
     sort: 4,
@@ -76,7 +84,7 @@ export const PROGRAMS = [
 
 export interface DefinitionState {
   id: string;
-  status: "draft" | "approved" | "changes_requested";
+  status: "draft" | "approved" | "changes_requested" | "rejected" | "blocked";
   /** Approved for exactly the current source, and every imported definition is effective too. */
   effective: boolean;
   /** Why it counts as a draft (empty when effective). */
@@ -332,7 +340,9 @@ export class Desk {
         const prog = progRows.find((p) => p.slug === f.program);
         if (!prog) throw new Error(`statement ${f.id}: unknown program "${f.program}"`);
         const [existing] = await tx.select().from(statements).where(eq(statements.id, f.id));
-        const autoApproved = f.defImports.length === 0;
+        // Trusted repository files: statements without definitions, and sanity lemmas (they must be
+        // provable while their definition is still in review: that is the point of them).
+        const autoApproved = f.defImports.length === 0 || f.sanityFor.length > 0;
         const values = {
           programId: prog.id,
           leanName: f.leanName,
@@ -343,10 +353,11 @@ export class Desk {
           fileSha256: f.fileSha256,
           source: f.source,
           defImports: f.defImports,
+          sanityFor: f.sanityFor,
           origin: existing?.origin ?? "repo",
         };
         const review = autoApproved
-          ? { status: "approved" as const, approvedBy: "repo (no definitions used)", approvedAt: this.now(), check: null }
+          ? { status: "approved" as const, approvedBy: f.sanityFor.length ? "repo (sanity lemma)" : "repo (no definitions used)", approvedAt: this.now(), check: null }
           : { status: "proposed" as const, approvedBy: null, approvedAt: null, check: null, proposedAt: this.now() };
         if (!existing) {
           await tx.insert(statements).values({ id: f.id, ...values, ...review, proposedBy: "repo" });
@@ -369,7 +380,7 @@ export class Desk {
   }
 
   /**
-   * Sync definition modules (lean/Defs). Every one starts as a DRAFT. An advisor's approval is for
+   * Sync definition modules (lean/Defs). Every one starts as a DRAFT. An approval (AI review) is for
    * exact source text: if the file changes, it is a draft again, and every approved statement that
    * uses it goes back to "proposed" (it must be re-reviewed).
    */
@@ -381,13 +392,14 @@ export class Desk {
       const existingRows = await tx.select().from(definitions);
       for (const f of files) {
         const ex = existingRows.find((d) => d.id === f.id);
-        const values = { path: f.path, title: f.title, summary: f.summary, source: f.source, sourceSha256: f.sourceSha256, imports: f.imports, requiresMathlib: f.requiresMathlib, removed: false, updatedAt: this.now() };
+        const values = { path: f.path, title: f.title, summary: f.summary, source: f.source, sourceSha256: f.sourceSha256, imports: f.imports, requiresMathlib: f.requiresMathlib, adversaryGoals: f.adversaryGoals, removed: false, updatedAt: this.now() };
         if (!ex) {
           await tx.insert(definitions).values({ id: f.id, ...values, status: "draft" });
           added.push(f.id);
           await emit(tx, "definition_synced", { payload: { definition: f.id, change: "added", status: "draft" } });
         } else if (ex.sourceSha256 !== f.sourceSha256 || ex.removed) {
-          await tx.update(definitions).set({ ...values, status: "draft" }).where(eq(definitions.id, f.id));
+          // A new source is reviewed again from scratch (an admin block stays until an admin lifts it).
+          await tx.update(definitions).set({ ...values, status: ex.status === "blocked" ? "blocked" : "draft" }).where(eq(definitions.id, f.id));
           changed.push(f.id);
           await emit(tx, "definition_synced", { payload: { definition: f.id, change: "changed", status: "draft" } });
         }
@@ -415,7 +427,16 @@ export class Desk {
       const d = byId.get(id);
       if (!d || d.removed) return { id, status: "draft", effective: false, blockers: [`${id} does not exist`] };
       const blockers: string[] = [];
-      if (d.status !== "approved") blockers.push(`${id} is ${d.status === "draft" ? "a draft" : "waiting for changes"}`);
+      if (d.status !== "approved") {
+        blockers.push(
+          `${id} ${
+            d.status === "draft" ? "is a draft (in AI review)"
+            : d.status === "rejected" ? "was rejected by the AI review"
+            : d.status === "blocked" ? "is blocked by an admin"
+            : "is waiting for changes"
+          }`,
+        );
+      }
       else if (d.reviewedSha256 !== d.sourceSha256) blockers.push(`${id} changed since it was reviewed`);
       for (const imp of d.imports) {
         if (path.includes(imp)) continue;
@@ -444,7 +465,7 @@ export class Desk {
     const approved = await this.db.select().from(statements).where(eq(statements.status, "approved"));
     const reverted: string[] = [];
     for (const st of approved) {
-      if (!st.defImports.length) continue;
+      if (!st.defImports.length || st.sanityFor.length) continue; // sanity lemmas test drafts on purpose
       const blockers = await this.draftBlockers(st.defImports);
       if (!blockers.length) continue;
       await this.db.transaction(async (tx) => {
@@ -531,7 +552,7 @@ export class Desk {
         join programs p on p.id = s.program_id
         where l.status = 'open' and s.status = 'approved' and p.status = 'active'
           and (${mathlib} or not s.requires_mathlib)
-          and not (s.def_imports && ${`{${draftDefs.join(",")}}`}::text[])
+          and (cardinality(s.sanity_for) > 0 or not (s.def_imports && ${`{${draftDefs.join(",")}}`}::text[]))
           and (${programSlug ?? null}::text is null or p.slug = ${programSlug ?? null})
           and (${opts.lemmaId ?? null}::text is null or l.id = ${opts.lemmaId ?? null})
           and not (l.offered_to is not null and l.offered_to <> ${agentId} and l.offered_until > ${nowIso}::timestamptz)
@@ -703,7 +724,7 @@ export class Desk {
   async recordUsage(
     attemptId: number | null,
     agentId: string,
-    call: { purpose: "prove" | "reply" | "decompose"; parts: UsagePart[]; requestId?: string },
+    call: { purpose: "prove" | "reply" | "decompose" | "review" | "adversary"; parts: UsagePart[]; requestId?: string },
     tx?: Tx,
   ): Promise<{ costUsd: string; costMicros: number; attemptCostUsd: string | null }> {
     if (!call.parts.length) throw new DeskError(400, "a model call needs at least one usage part");

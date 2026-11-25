@@ -3,6 +3,7 @@ import { connect, runMigrations } from "./db/client.ts";
 import { HttpJudgeClient } from "./judge-client.ts";
 import { LeanRepo } from "./lean-repo.ts";
 import { Review } from "./review.ts";
+import { AiReview } from "./ai-review.ts";
 import { PantryAlerts } from "./pantry.ts";
 import { buildServer } from "./server.ts";
 import { Desk } from "./service.ts";
@@ -12,7 +13,8 @@ const { db } = connect(config.DATABASE_URL);
 await runMigrations(db);
 const desk = new Desk(db, new HttpJudgeClient(config.JUDGE_URL, config.JUDGE_API_TOKEN), new LeanRepo(config.LEAN_DIR), config);
 const review = new Review(desk, desk.judge);
-const app = buildServer(desk, review);
+const ai = new AiReview(desk, review);
+const app = buildServer(desk, review, undefined, ai);
 app.log.info({ proofCommits: config.PROOF_COMMIT_MODE, target: await desk.committer.targetLeanDir(), realRun: config.HATCHERY_REAL_RUN, push: config.PROOF_PUSH }, "where accepted proofs go");
 
 const synced = await desk.syncStatements();
@@ -38,6 +40,11 @@ setInterval(recheck, config.RECHECK_INTERVAL_SECONDS * 1000);
 const checks = () => review.runPendingChecks().then((d) => d.length && app.log.info({ checked: d }, "statement checks")).catch((err) => app.log.error(err, "statement checks"));
 void checks();
 setInterval(checks, 60_000);
+// Autonomous review: start rounds for drafts and proposed statements, decide what can be decided.
+const reviewTick = () =>
+  ai.tick().then((r) => (r.started.length || r.decided.length) && app.log.info(r, "AI review")).catch((err) => app.log.error(err, "AI review"));
+void reviewTick();
+setInterval(reviewTick, config.REVIEW_TICK_SECONDS * 1000);
 
 // Pantry alerts (log + feed event + optional webhook) when food runs low, and when it recovers.
 const alerts = new PantryAlerts(desk, app.log);

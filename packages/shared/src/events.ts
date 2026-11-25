@@ -45,6 +45,11 @@ export const EVENT_TYPES = [
   "pantry_outflow",
   "pantry_low",
   "pantry_ok",
+  // Autonomous review (no human advisor)
+  "review_started",
+  "review_step",
+  "review_flagged",
+  "review_overridden",
 ] as const;
 
 /** Why an agent is not allowed to call a model right now. */

@@ -5,7 +5,7 @@ import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { promisify } from "node:util";
 import { afterAll, describe, expect, it } from "vitest";
-import { codeBlock, commentBody, decide, ResultSchema, resultFrom, validatePrFiles } from "../src/contrib.ts";
+import { codeBlock, commentBody, decide, parseFlagIssue, ResultSchema, resultFrom, validatePrFiles } from "../src/contrib.ts";
 
 const run = promisify(execFile);
 
@@ -25,6 +25,17 @@ describe("which pull requests are judged at all", () => {
     // A proof plus anything else (e.g. a changed workflow or judge) is refused outright.
     expect(validatePrFiles([{ filename: "lean/Proofs/L_core_003.lean", status: "added" }, { filename: "apps/judge/src/judge.ts", status: "modified" }])).toMatchObject({ ok: false, reason: expect.stringMatching(/exactly one file/) });
     expect(validatePrFiles([])).toMatchObject({ ok: false });
+  });
+});
+
+describe("review flags from the issue form", () => {
+  it("takes only a valid id from the first field; the reason is data", () => {
+    const body = "### What should be re-reviewed?\n\nDefs.Core.Circuit\n\n### Why?\n\nDepth of an empty circuit is 0, Arora–Barak says undefined.\n$(rm -rf /)";
+    expect(parseFlagIssue(body)).toEqual({ targetId: "Defs.Core.Circuit", reason: "Depth of an empty circuit is 0, Arora–Barak says undefined.\n$(rm -rf /)" });
+    expect(parseFlagIssue("### What should be re-reviewed?\n\n`L-circ-014` please\n\n### Why?\n\nx")).toMatchObject({ targetId: "L-circ-014" });
+    for (const bad of ["", "### What?\n\nDefs.Core.Circuit; rm -rf /\n", "### What?\n\n../../etc/passwd\n", "### What?\n\nL_core_001\n"]) {
+      expect(parseFlagIssue(bad), bad).toHaveProperty("error");
+    }
   });
 });
 

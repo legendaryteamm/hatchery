@@ -54,6 +54,24 @@ const Env = z.object({
   PROOF_PUSH_REMOTE: z.string().default("origin"),
   PROOF_PUSH_BRANCH: z.string().default("main"),
 
+  // ---- Autonomous review (docs/autonomous-review.md): no human math advisor
+  /** The human advisor review tool (Phase 3). Off by default: definitions and statements are reviewed by AI agents. */
+  HUMAN_REVIEW_TOOL: flag,
+  /** Independent reviewer agents that must ALL agree before a definition is approved (at least 2). */
+  DEFINITION_REVIEWERS_REQUIRED: z.coerce.number().int().min(2).default(2),
+  /** Reviewer agents that must confirm a statement is meaningful for its program. */
+  STATEMENT_REVIEWERS_REQUIRED: z.coerce.number().int().min(1).default(1),
+  /** 1 = the definition reviewers must use different models (set it when more than one model is available). */
+  REVIEW_REQUIRE_DISTINCT_MODELS: flag,
+  /** The adversary's budget per definition review, and the judge checks it must at least try before it may give up. */
+  ADVERSARY_BUDGET_USD: z.coerce.number().positive().default(2),
+  ADVERSARY_MIN_CHECKS: z.coerce.number().int().nonnegative().default(3),
+  /** How long one adversary agent holds a round before another may take it over. */
+  ADVERSARY_LEASE_SECONDS: z.coerce.number().int().positive().default(1800),
+  /** Public flags (GitHub issues) per GitHub login per day. */
+  MAX_FLAGS_PER_LOGIN_PER_DAY: z.coerce.number().int().nonnegative().default(5),
+  REVIEW_TICK_SECONDS: z.coerce.number().int().positive().default(30),
+
   // ---- Phase 3: review and decomposer
   /** Where reviewers open the review tool (invite links point here). */
   PUBLIC_SITE_URL: z.string().default("http://localhost:5173"),

@@ -1,6 +1,8 @@
 /**
- * Phase 3: human review of definitions and statements, and the decomposer's proposals.
+ * Phase 3 review tool (HUMAN, now optional: HUMAN_REVIEW_TOOL=1), the automatic statement check, and
+ * the decomposer's proposals. The default review is done by AI agents: see ai-review.ts.
  *
+ * Human-tool rules (when enabled):
  * Rules (BUILD_PROMPT.md section 7 + maintainer decisions of Phase 3):
  *  - Every definition module is a DRAFT until a math ADVISOR approves its exact current source.
  *  - A statement can only be approved (by an advisor or a maintainer) when it passed the automatic
@@ -18,6 +20,7 @@ import {
   programs,
   reviewerSessions,
   reviewers,
+  reviewRounds,
   reviews,
   splitRequests,
   statements,
@@ -217,7 +220,7 @@ export class Review {
     return out;
   }
 
-  private async duplicateOf(id: string, leanStatement: string): Promise<string | null> {
+  async duplicateOf(id: string, leanStatement: string): Promise<string | null> {
     const others = await this.db
       .select({ id: statements.id, text: statements.leanStatement })
       .from(statements)
@@ -237,10 +240,11 @@ export class Review {
     const now = this.desk.now();
     await this.db.transaction(async (tx) => {
       await tx.insert(reviews).values({ targetKind: "definition", targetId: id, targetSha256: seenSha256, reviewerId: reviewer.id, decision, comment, ts: now });
+      if (decision !== "comment") await this.supersedeAiRounds(tx, "definition", id, `${reviewer.role} ${reviewer.name} decided: ${decision}`);
       if (decision === "approve") {
-        await tx.update(definitions).set({ status: "approved", reviewedSha256: seenSha256, reviewedBy: reviewer.id, reviewedAt: now }).where(eq(definitions.id, id));
+        await tx.update(definitions).set({ status: "approved", reviewedSha256: seenSha256, reviewedBy: reviewer.id, reviewedAt: now, reviewedVia: "human" }).where(eq(definitions.id, id));
       } else if (decision === "request_changes") {
-        await tx.update(definitions).set({ status: "changes_requested", reviewedSha256: null, reviewedBy: reviewer.id, reviewedAt: now }).where(eq(definitions.id, id));
+        await tx.update(definitions).set({ status: "changes_requested", reviewedSha256: null, reviewedBy: reviewer.id, reviewedAt: now, reviewedVia: "human" }).where(eq(definitions.id, id));
       }
       await emit(tx, "definition_reviewed", { payload: { definition: id, decision, reviewer: reviewer.name, role: reviewer.role } });
     });
@@ -261,6 +265,7 @@ export class Review {
     const now = this.desk.now();
     await this.db.transaction(async (tx) => {
       await tx.insert(reviews).values({ targetKind: "statement", targetId: id, targetSha256: seenSha256, reviewerId: reviewer.id, decision, comment, ts: now });
+      if (decision !== "comment") await this.supersedeAiRounds(tx, "statement", id, `${reviewer.role} ${reviewer.name} decided: ${decision}`);
       if (decision === "approve") {
         await tx.update(statements).set({ status: "approved", approvedBy: `${reviewer.name} (${reviewer.role})`, approvedAt: now, rejectReason: null }).where(eq(statements.id, id));
         await tx.insert(lemmas).values({ id, status: "open" }).onConflictDoNothing();
@@ -277,6 +282,14 @@ export class Review {
       await this.desk.recheckScan();
     }
     return this.statementDetail(id);
+  }
+
+  /** A human decision (HUMAN_REVIEW_TOOL=1) replaces a running AI review of the same target. */
+  private async supersedeAiRounds(tx: Parameters<Parameters<Desk["db"]["transaction"]>[0]>[0], kind: "definition" | "statement", id: string, reason: string) {
+    await tx
+      .update(reviewRounds)
+      .set({ status: "superseded", finishedAt: this.desk.now(), reason, adversaryAgent: null })
+      .where(and(eq(reviewRounds.targetKind, kind), eq(reviewRounds.targetId, id), eq(reviewRounds.status, "running")));
   }
 
   // ================================================================ automatic statement checks
@@ -334,7 +347,8 @@ export class Review {
       .where(eq(splitRequests.status, "open"))
       .orderBy(asc(splitRequests.id));
     return {
-      programs: progs.filter((p) => p.slug !== "core-warmup" && (!programSlug || p.slug === programSlug)).map((p) => ({
+      // The decomposer proposes research statements only (warm-up and sanity lemmas come from the repository).
+      programs: progs.filter((p) => p.slug !== "core-warmup" && p.slug !== "definition-sanity" && (!programSlug || p.slug === programSlug)).map((p) => ({
         slug: p.slug,
         title: p.title,
         description: p.description,
@@ -359,7 +373,7 @@ export class Review {
 
   /**
    * A decomposer proposal: the desk assigns the id, writes the statement file, runs the automatic
-   * check, and stores it as "proposed" (or auto-rejects it). It is never leasable before a human approves.
+   * check, and stores it as "proposed" (or auto-rejects it). It is never leasable before it passes the AI review.
    */
   async propose(
     agentId: string,
@@ -380,7 +394,7 @@ export class Review {
       `-- program: ${p.program}`,
       `-- title: ${p.title.replace(/\n/g, " ").slice(0, 200)}`,
       `-- depends_on: ${p.parentId ?? ""}`,
-      `-- proposed by: ${agentId} (decomposer); needs human approval`,
+      `-- proposed by: ${agentId} (decomposer); needs to pass the AI review`,
       ...p.imports.map((m) => `import ${m}`),
       "",
       `def Statement.${leanName} : Prop :=`,

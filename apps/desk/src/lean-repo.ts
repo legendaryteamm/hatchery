@@ -30,6 +30,8 @@ export interface StatementFile {
   source: string;
   /** Definition modules imported (`Defs.*`). */
   defImports: string[];
+  /** Sanity lemma: the definition modules this known fact tests ("-- sanity_for:"). */
+  sanityFor: string[];
 }
 
 export interface Declaration {
@@ -51,6 +53,8 @@ export interface DefinitionFile {
   imports: string[];
   requiresMathlib: boolean;
   declarations: Declaration[];
+  /** Extra goals for the adversary agent ("adversary:" header, separated by ";"). False is always tried. */
+  adversaryGoals: string[];
 }
 
 export function importsOf(source: string): string[] {
@@ -108,7 +112,7 @@ export class LeanRepo {
       .filter((s): s is StatementFile => s !== null);
   }
 
-  /** Definition modules under Defs/ (the review units of the math advisor). */
+  /** Definition modules under Defs/ (the units of the automated review). */
   definitionFiles(): DefinitionFile[] {
     return walk(join(this.dir, "Defs"))
       .filter((p) => p.endsWith(".lean"))
@@ -129,6 +133,7 @@ export class LeanRepo {
           imports: imports.filter((m) => m.startsWith("Defs.")),
           requiresMathlib: imports.some((m) => m === "Mathlib" || m.startsWith("Mathlib.")),
           declarations: declarationsOf(source),
+          adversaryGoals: header("adversary").split(";").map((g) => g.trim()).filter(Boolean),
         };
       });
   }
@@ -153,6 +158,7 @@ export class LeanRepo {
       fileSha256: sha256(source),
       source,
       defImports: importsOf(source).filter((m) => m.startsWith("Defs.")),
+      sanityFor: header("sanity_for").split(",").map((s) => s.trim()).filter(Boolean),
     };
   }
 

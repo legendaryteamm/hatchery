@@ -8,9 +8,9 @@ import { afterEach, describe, expect, it } from "vitest";
 import { createServer, type IncomingMessage } from "node:http";
 import type { AddressInfo } from "node:net";
 import { eq } from "drizzle-orm";
-import { GitHub, report, resultFrom, validatePrFiles } from "@hatchery/judge";
+import { flagFromIssue, GitHub, report, resultFrom, validatePrFiles } from "@hatchery/judge";
 import type { JudgeVerdict } from "@hatchery/shared";
-import { events, lemmas } from "../src/db/schema.ts";
+import { events, lemmas, reviewFlags } from "../src/db/schema.ts";
 import { buildServer } from "../src/server.ts";
 import { makeDesk } from "./helpers.ts";
 
@@ -41,7 +41,7 @@ async function fakeGitHub(pr: { files: { filename: string; status: string }[]; c
     }
     if (req.method === "GET" && req.url?.startsWith("/repos/org/hatchery/pulls/12/files")) return json(200, pr.files);
     if (req.method === "GET" && req.url === `/repos/alice/hatchery/contents/lean/Proofs/L_core_003.lean?ref=${HEAD}`) { res.end(pr.content); return; }
-    if (req.method === "POST" && req.url === "/repos/org/hatchery/issues/12/comments") return json(201, { id: 1 });
+    if (req.method === "POST" && /^\/repos\/org\/hatchery\/issues\/\d+\/comments$/.test(req.url ?? "")) return json(201, { id: 1 });
     if (req.method === "PUT" && req.url === "/repos/org/hatchery/pulls/12/merge") return json(200, { sha: MERGE, merged: true });
     json(404, { message: "Not Found" });
   });
@@ -129,5 +129,24 @@ describe("contributor flow: lease, pull request, CI judge, desk judge, bot merge
     const r2 = await report(ok, env(g.github, url, { autoMerge: false }));
     expect(r2.outcome).toMatchObject({ merge: false, desk: { result: "pass" }, why: expect.stringMatching(/auto-merge is off/) });
     expect(g.calls.some((k) => k.method === "PUT")).toBe(false);
+  });
+});
+
+describe("public review flags (review-flag workflow)", () => {
+  it("an issue from the form sends a definition back to review and gets an answer; unlabelled issues are ignored", async () => {
+    const { url, db } = await colony();
+    const { github, calls } = await fakeGitHub({ files, content: PROOF });
+    const event = (body: string, labels = ["review-flag"]) => ({ issue: { number: 12, body, user: { login: "Skeptic" }, labels: labels.map((name) => ({ name })) } });
+    const env = { github, githubToken: "ghs_workflow", deskUrl: url, deskToken: CONTRIB_TOKEN, siteUrl: "http://localhost:5173" };
+    expect(await flagFromIssue(event("### What should be re-reviewed?\n\nDefs.Core.Formula\n\n### Why?\n\nx", ["bug"]), env)).toMatchObject({ result: "ignored" });
+    const r = await flagFromIssue(event("### What should be re-reviewed?\n\nDefs.Core.Formula\n\n### Why?\n\nFormula.size counts constants."), env);
+    expect(r).toMatchObject({ result: "accepted" });
+    const comment = calls.find((c) => c.method === "POST" && c.url === "/repos/org/hatchery/issues/12/comments")!;
+    expect((comment.body as { body: string }).body).toMatch(/^Thank you\. Defs\.Core\.Formula is back in review \(round #\d+\)\. AI reviewer agents will look at it again, with your text as input \(never as instructions\)\.\n\nEvery review step, with the reviewers' reasoning: http:\/\/localhost:5173\/definitions\/Defs\.Core\.Formula/);
+    const [flag] = await db.select().from(reviewFlags);
+    expect(flag).toMatchObject({ issueNumber: 12, login: "skeptic", targetId: "Defs.Core.Formula", reason: "Formula.size counts constants." });
+    const bad = await flagFromIssue({ issue: { number: 13, body: "### What?\n\nrm -rf\n", user: { login: "x" }, labels: [{ name: "review-flag" }] } }, env);
+    expect(bad.result).toBe("refused");
+    expect((calls.filter((c) => c.url === "/repos/org/hatchery/issues/13/comments").at(-1)!.body as { body: string }).body).toMatch(/^Not sent to review: the first field must be a definition module/);
   });
 });

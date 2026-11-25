@@ -1,5 +1,5 @@
 /**
- * Checks a PROPOSED statement before it reaches the human review queue (section 7):
+ * Checks a PROPOSED statement before it reaches the AI review (section 7; docs/autonomous-review.md):
  *   1. static rules (imports, banned words, exactly one `def Statement.<L> : Prop`);
  *   2. it elaborates in Lean with `sorry` as the proof;
  *   3. it is not trivial: auto-reject if `trivial`, `decide`, `simp`, `omega` (and `aesop` in the

@@ -1,9 +1,12 @@
 import { Link } from "react-router-dom";
 import { api } from "../api";
+import { useApi } from "../lib";
 import { useMe } from "./useMe";
 
 export function ReviewLayout({ children }: { children: React.ReactNode }) {
   const me = useMe();
+  const cfg = useApi<{ humanReviewTool: boolean }>("/review-config").data;
+  if (cfg && !cfg.humanReviewTool) return <ToolDisabled />;
   if (me === undefined) return <p className="muted">Loading…</p>;
   if (me === null)
     return (
@@ -31,6 +34,19 @@ export function ReviewLayout({ children }: { children: React.ReactNode }) {
         </button>
       </nav>
       {children}
+    </div>
+  );
+}
+
+/** The human advisor tool is kept in the code but off: there is no human math advisor. */
+export function ToolDisabled() {
+  return (
+    <div className="card">
+      <h1>Review tool</h1>
+      <p>
+        The human review tool is switched off. Definitions and statements are reviewed by AI agents, not by a human mathematician; every
+        review, with the agents' reasoning, is on the <Link to="/definitions">definition</Link> and lemma pages.
+      </p>
     </div>
   );
 }

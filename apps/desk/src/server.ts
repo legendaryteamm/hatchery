@@ -12,6 +12,7 @@ import { and, asc, desc, eq, gt, sql } from "drizzle-orm";
 import { z } from "zod";
 import { LemmaIdSchema, MAX_PROOF_BYTES, MESSAGE_LIMITS, SLEEP_REASONS } from "@hatchery/shared";
 import { agents, attempts, events, leases, lemmas, messages, programs, statements } from "./db/schema.ts";
+import { AiReview, AI_REVIEW_LABEL } from "./ai-review.ts";
 import { Contributors, GITHUB_LOGIN, safeEqual } from "./contrib.ts";
 import { Review, type Reviewer } from "./review.ts";
 import { Desk, DeskError } from "./service.ts";
@@ -72,7 +73,22 @@ const Schemas = {
   checked: z.object({ q: z.string().min(2).max(100) }),
   killSwitch: z.object({ on: z.boolean(), by: z.string().min(1).max(64).optional() }),
   split: z.object({ agentId: AgentId, reason: z.string().min(1).max(MESSAGE_LIMITS.body) }),
-  usageOnly: z.object({ agentId: AgentId, purpose: z.enum(["decompose"]), parts: z.array(Part).min(1).max(10), requestId: z.string().max(200).optional() }),
+  usageOnly: z.object({ agentId: AgentId, purpose: z.enum(["decompose", "review"]), parts: z.array(Part).min(1).max(10), requestId: z.string().max(200).optional() }),
+  verdict: z.object({
+    agentId: AgentId,
+    model: z.string().min(1).max(100),
+    agree: z.boolean(),
+    summary: z.string().min(1).max(500),
+    reasoning: z.string().max(8000).default(""),
+    details: z.record(z.unknown()).default({}),
+    parts: z.array(Part).max(10).default([]),
+    requestId: z.string().max(200).optional(),
+  }),
+  adversaryUsage: z.object({ agentId: AgentId, parts: z.array(Part).min(1).max(10), requestId: z.string().max(200).optional() }),
+  adversaryCheck: z.object({ agentId: AgentId, goalIndex: z.number().int().min(0).max(20), source: Source }),
+  adversaryDone: z.object({ agentId: AgentId, notes: z.string().max(8000).default("") }),
+  override: z.object({ action: z.enum(["revert", "block", "unblock"]), reason: z.string().min(3).max(2000) }),
+  flag: z.object({ issueNumber: z.number().int().positive(), login: z.string().regex(GITHUB_LOGIN), targetId: z.string().regex(/^(Defs(\.[A-Za-z0-9_]+)+|L(-[a-z0-9]+)+)$/), reason: z.string().max(4000).default("") }),
   proposal: z.object({
     agentId: AgentId,
     program: z.string().min(1).max(64),
@@ -131,7 +147,12 @@ function tokenOk(header: string | undefined, token: string): boolean {
   return given.length === want.length && timingSafeEqual(given, want);
 }
 
-export function buildServer(desk: Desk, review: Review = new Review(desk, desk.judge), contrib: Contributors = new Contributors(desk)): FastifyInstance {
+export function buildServer(
+  desk: Desk,
+  review: Review = new Review(desk, desk.judge),
+  contrib: Contributors = new Contributors(desk),
+  ai: AiReview = new AiReview(desk, review),
+): FastifyInstance {
   const app = Fastify({ logger: { level: process.env.LOG_LEVEL ?? "info" }, bodyLimit: MAX_PROOF_BYTES * 2, trustProxy: desk.config.TRUST_PROXY });
   const db = desk.db;
   // Public routes are rate limited per client (fixed one-minute window). Workers (token),
@@ -149,6 +170,12 @@ export function buildServer(desk: Desk, review: Review = new Review(desk, desk.j
     if (++w.n > desk.config.RATE_LIMIT_PER_MINUTE) {
       reply.header("retry-after", Math.ceil((w.start + 60_000 - now) / 1000));
       return reply.code(429).send({ error: "too many requests; try again in a minute" });
+    }
+  });
+  // The human advisor review tool (Phase 3) is off unless HUMAN_REVIEW_TOOL=1: reviews are done by AI agents.
+  app.addHook("onRequest", async (req, reply) => {
+    if (!desk.config.HUMAN_REVIEW_TOOL && req.url.startsWith("/review/")) {
+      return reply.code(404).send({ error: "the human review tool is disabled; definitions and statements are reviewed by AI agents (docs/autonomous-review.md)", disabled: true });
     }
   });
   const streams = new Map<string, number>();
@@ -327,6 +354,28 @@ export function buildServer(desk: Desk, review: Review = new Review(desk, desk.j
     return desk.recordInflows(b.chain, b.inflows.map((i) => ({ ...i, ts: new Date(i.ts) })), b.cursor);
   }));
 
+  // ---------------------------------------------------------------- internal: AI reviewer and adversary agents
+  app.get("/internal/review/task", internal(async (req, reply) => {
+    const q = z.object({ agentId: AgentId, model: z.string().min(1).max(100) }).parse(req.query);
+    return (await ai.nextTask(q.agentId, q.model)) ?? reply.code(204).send();
+  }));
+  app.post("/internal/review/rounds/:id/verdict", internal(async (req) => {
+    const b = Schemas.verdict.parse(req.body);
+    return ai.recordVerdict(idParam(req), b);
+  }));
+  app.post("/internal/review/rounds/:id/adversary/usage", internal(async (req) => {
+    const b = Schemas.adversaryUsage.parse(req.body);
+    return ai.adversaryUsage(idParam(req), b.agentId, b.parts, b.requestId);
+  }));
+  app.post("/internal/review/rounds/:id/adversary/check", internal(async (req) => {
+    const b = Schemas.adversaryCheck.parse(req.body);
+    return ai.adversaryCheck(idParam(req), b.agentId, b.goalIndex, b.source);
+  }));
+  app.post("/internal/review/rounds/:id/adversary/done", internal(async (req) => {
+    const b = Schemas.adversaryDone.parse(req.body);
+    return ai.adversaryDone(idParam(req), b.agentId, b.notes);
+  }));
+
   // ---------------------------------------------------------------- internal: decomposer and splits
   app.get("/internal/decomposer/context", internal(async (req) => {
     const q = z.object({ agentId: AgentId, program: z.string().max(64).optional() }).parse(req.query);
@@ -338,14 +387,15 @@ export function buildServer(desk: Desk, review: Review = new Review(desk, desk.j
   }));
   app.post("/internal/usage", internal(async (req) => {
     const b = Schemas.usageOnly.parse(req.body);
-    return review.recordDecomposerUsage(b.agentId, b.parts, b.requestId);
+    // Model calls outside an attempt: the decomposer, and reviewer calls that produced no verdict.
+    return desk.recordUsage(null, b.agentId, { purpose: b.purpose, parts: b.parts, requestId: b.requestId });
   }));
   app.post("/internal/attempts/:id/split", internal(async (req) => {
     const b = Schemas.split.parse(req.body);
     return review.requestSplit(b.agentId, idParam(req), b.reason);
   }));
 
-  // ---------------------------------------------------------------- review tool (advisors, maintainers)
+  // ---------------------------------------------------------------- human review tool (advisors, maintainers; off unless HUMAN_REVIEW_TOOL=1)
   /**
    * Reviewers sign in with a one-time invite link (no developer account needed). The session is an
    * httpOnly, SameSite=Strict cookie. Every state-changing request must also carry the header
@@ -409,6 +459,12 @@ export function buildServer(desk: Desk, review: Review = new Review(desk, desk.j
       from contributors c order by c.created_at desc limit 200`);
     const prs = await db.execute(sql`select ts::text, login, pr_number, head_sha, lemma_id, result, reason, merged_commit from contributions order by id desc limit 50`);
     return { budget: await desk.budget(null), externalLeases: ext, contributors: people, contributions: prs };
+  }));
+  /** Admin override of the AI review: revert (back to review), block, unblock. */
+  app.post("/admin/review/:kind/:id", admin(async (req, _reply, who) => {
+    const p = z.object({ kind: z.enum(["definition", "statement"]), id: z.string().min(1).max(120) }).parse(req.params);
+    const b = Schemas.override.parse(req.body);
+    return ai.adminOverride(p.kind, p.id, b.action, b.reason, who);
   }));
   app.post("/admin/contributors/:login/block", admin(async (req) => {
     const login = z.string().regex(GITHUB_LOGIN).parse((req.params as { login: string }).login);
@@ -502,6 +558,8 @@ export function buildServer(desk: Desk, review: Review = new Review(desk, desk.j
     }).parse(req.body);
     return contrib.submission(b);
   }));
+  /** A GitHub issue flagged a definition or statement (review-flag workflow): it goes back to review. */
+  app.post("/contrib/flags", ci(async (req) => ai.flag(Schemas.flag.parse(req.body))));
   app.post("/contrib/merged", ci(async (req) => contrib.merged(z.object({ prNumber: z.number().int().positive(), headSha: Sha, commit: Sha }).parse(req.body))));
 
   // ---------------------------------------------------------------- public, read-only
@@ -591,8 +649,23 @@ export function buildServer(desk: Desk, review: Review = new Review(desk, desk.j
   app.get("/definitions", async () => review.definitionList());
   app.get("/definitions/:id", async (req) => {
     const d = await review.definitionDetail((req.params as { id: string }).id);
-    return { ...d, history: d.history.map(({ reviewer, role, ts, decision, comment }) => ({ reviewer, role, ts, decision, comment })) };
+    return {
+      ...d,
+      history: d.history.map(({ reviewer, role, ts, decision, comment }) => ({ reviewer, role, ts, decision, comment })),
+      aiReview: await ai.history("definition", d.id),
+    };
   });
+  /** Every AI review round of a statement, with each step and the reviewers' reasoning. */
+  app.get("/statements/:id/review", async (req) => ai.history("statement", LemmaIdSchema.parse((req.params as { id: string }).id)));
+  app.get("/reviews/recent", async () => ai.recentDecisions(50));
+  app.get("/review-config", async () => ({
+    label: AI_REVIEW_LABEL,
+    humanReviewTool: desk.config.HUMAN_REVIEW_TOOL,
+    definitionReviewersRequired: desk.config.DEFINITION_REVIEWERS_REQUIRED,
+    statementReviewersRequired: desk.config.STATEMENT_REVIEWERS_REQUIRED,
+    adversaryBudgetUsd: desk.config.ADVERSARY_BUDGET_USD,
+    flagRepo: desk.config.CONTRIB_REPO || null,
+  }));
   /** Statements by status (proposed ones are in review; rejected ones keep their reason). */
   app.get("/statements", async (req) => {
     const q = z.object({ status: z.enum(["proposed", "approved", "rejected"]).optional() }).parse(req.query);

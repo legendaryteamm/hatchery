@@ -34,7 +34,7 @@ describe("colony snapshot (everything from the database)", () => {
     expect(a).toMatchObject({ lemmaId: "L-core-001", program: "core-warmup", camp: "core-warmup", heartbeatFresh: true, sleeping: false, spentTodayUsd: "0.140000", level: 1, active: true });
     expect(a.food).toBeCloseTo((0.5 - 0.14) / 0.5, 5);
     expect(b).toMatchObject({ sleeping: true, sleepReason: "agent_cap", lemmaId: null, food: 1 });
-    expect(s.totals).toEqual({ checked: 0, lemmas: 5, awake: 1 });
+    expect(s.totals).toEqual({ checked: 0, lemmas: 15, awake: 1 }); // 5 core + 10 sanity lemmas
     expect(s.programs.find((p) => p.slug === "core-warmup")).toMatchObject({ checked: 0, total: 5 });
     expect(s.programs.find((p) => p.slug === "circuit-lower-bounds")).toMatchObject({ checked: 0, total: 0 }); // nothing approved yet
     expect(s.asOfEventId).toBe((await db.select().from(events)).at(-1)!.id);

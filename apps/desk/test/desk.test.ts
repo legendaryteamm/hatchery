@@ -21,11 +21,17 @@ const part = { model: "claude-opus-5-5", inputTokens: 1000, outputTokens: 500, c
 const usage = { purpose: "prove" as const, parts: [part] };
 
 describe("statements", () => {
-  it("syncs the 5 core seed statements as approved, open lemmas (fixtures excluded)", async () => {
+  it("syncs the 5 core seed statements and the 10 sanity lemmas as approved, open lemmas (fixtures excluded)", async () => {
     const { db } = await setup();
     const rows = await db.select().from(statements).orderBy(statements.id);
-    expect(rows.map((r) => r.id)).toEqual(["L-core-001", "L-core-002", "L-core-003", "L-core-004", "L-core-005"]);
-    expect(rows.every((r) => r.status === "approved" && !r.requiresMathlib)).toBe(true);
+    const core = rows.filter((r) => r.id.startsWith("L-core-"));
+    expect(core.map((r) => r.id)).toEqual(["L-core-001", "L-core-002", "L-core-003", "L-core-004", "L-core-005"]);
+    expect(core.every((r) => r.status === "approved" && !r.requiresMathlib && r.sanityFor.length === 0)).toBe(true);
+    const sanity = rows.filter((r) => r.id.startsWith("L-sanity-"));
+    expect(sanity).toHaveLength(10);
+    expect(sanity.every((r) => r.status === "approved" && r.approvedBy === "repo (sanity lemma)" && r.sanityFor.length === 1)).toBe(true);
+    expect(sanity.filter((r) => r.requiresMathlib).map((r) => r.id)).toEqual(["L-sanity-009", "L-sanity-010"]); // P ⊆ NP, complement
+    expect(rows).toHaveLength(15);
     expect((await db.select().from(lemmas)).every((l) => l.status === "open")).toBe(true);
   });
 });
@@ -50,10 +56,10 @@ describe("leases and attempts", () => {
     expect(a).toMatchObject({ result: "checked", tokensIn: 2000, tokensOut: 1000, cacheReadTokens: 4000, cacheWriteTokens: 200, costUsd: "0.029800", turns: 2 });
     expect((await db.select().from(modelCalls)).length).toBe(2);
     expect(await desk.spentSince("agent-1", new Date(0))).toBe("0.029800");
-    expect(await eventTypes(db)).toEqual([
-      "definition_synced", "definition_synced", "definition_synced", // Defs.Core.{Circuit,Formula,Resolution}; the Mathlib one is synced too
-      "definition_synced",
-      "statement_synced", "statement_synced", "statement_synced", "statement_synced", "statement_synced",
+    const types = await eventTypes(db);
+    expect(types.filter((t) => t === "definition_synced")).toHaveLength(4); // Defs.Core.{Circuit,Formula,Resolution}, Defs.Mathlib.Complexity
+    expect(types.filter((t) => t === "statement_synced")).toHaveLength(15); // 5 core + 10 sanity
+    expect(types.filter((t) => !["definition_synced", "statement_synced"].includes(t))).toEqual([
       "pantry_inflow", // the test pantry top-up is recorded like any inflow
       "agent_registered", "leased", "attempt_started", "model_call", "model_call", "submitted", "checked",
     ]);

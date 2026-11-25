@@ -227,14 +227,20 @@ describe("definitions are drafts until a math advisor approves them", () => {
     // Leasing: the core warm-up lemmas only, never L-circ-001.
     await desk.registerAgent("agent-a", "fake-model");
     const leasedIds: string[] = [];
-    for (let i = 0; i < 6; i++) {
+    for (let i = 0; i < 20; i++) {
       const ctx = await desk.lease("agent-a");
       if (!ctx) break;
       leasedIds.push(ctx.lemmaId);
       await desk.release("agent-a", ctx.lemmaId, "", false);
       await desk.db.update(lemmas).set({ status: "checked" }).where(eq(lemmas.id, ctx.lemmaId));
     }
-    expect(leasedIds).toEqual(["L-core-001", "L-core-002", "L-core-003", "L-core-004", "L-core-005"]);
+    // Core lemmas, and the sanity lemmas of the core definitions: those are leasable WHILE their
+    // definitions are drafts (proving them is part of the review). Never the statement that uses a
+    // draft definition, and never the Mathlib sanity lemmas on a lite judge.
+    expect(leasedIds).toEqual([
+      "L-core-001", "L-core-002", "L-core-003", "L-core-004", "L-core-005",
+      "L-sanity-001", "L-sanity-002", "L-sanity-003", "L-sanity-004", "L-sanity-005", "L-sanity-006", "L-sanity-007", "L-sanity-008",
+    ]);
   });
 
   it("review flow: only an advisor approves definitions; a statement needs every definition approved", async () => {
@@ -298,8 +304,18 @@ describe("definitions are drafts until a math advisor approves them", () => {
 });
 
 describe("review tool over HTTP (invite link, cookie session, CSRF header)", () => {
+  it("is off by default: reviews are done by AI agents", async () => {
+    const { desk, review } = await setup();
+    const app = buildServer(desk, review);
+    const r = await app.inject({ method: "GET", url: "/review/queue" });
+    expect(r.statusCode).toBe(404);
+    expect(r.json()).toMatchObject({ disabled: true, error: expect.stringMatching(/reviewed by AI agents/) });
+    expect((await app.inject({ method: "POST", url: "/review/join", payload: { token: "x".repeat(30) }, headers: { "x-hatchery-review": "1" } })).statusCode).toBe(404);
+    expect((await app.inject({ url: "/review-config" })).json()).toMatchObject({ humanReviewTool: false, label: "Reviewed by AI agents, not by a human mathematician." });
+  });
+
   it("an advisor signs in with the invite link and reviews in the browser; the public API shows drafts", async () => {
-    const { desk, review } = await setup({ leanDir: leanWithCircuitStatement() });
+    const { desk, review } = await setup({ leanDir: leanWithCircuitStatement(), config: { HUMAN_REVIEW_TOOL: "1" } });
     const app = buildServer(desk, review);
     const { inviteUrl } = await review.addReviewer("Dr. Ada", "advisor");
     const token = new URL(inviteUrl).hash.slice(1);
@@ -343,7 +359,7 @@ describe("decomposer: proposals go to the review queue; only approved statements
     expect(ok).toMatchObject({ id: "L-circ-001", status: "proposed" });
     const [row] = await db.select().from(statements).where(eq(statements.id, "L-circ-001"));
     expect(row!.source).toBe(
-      "-- program: circuit-lower-bounds\n-- title: Parity not in AC0\n-- depends_on: \n-- proposed by: decomposer-1 (decomposer); needs human approval\nimport Defs.Core.Circuit\n\ndef Statement.L_circ_001 : Prop :=\n  ¬ Hatchery.Defs.InAC0 Hatchery.Defs.parity\n",
+      "-- program: circuit-lower-bounds\n-- title: Parity not in AC0\n-- depends_on: \n-- proposed by: decomposer-1 (decomposer); needs to pass the AI review\nimport Defs.Core.Circuit\n\ndef Statement.L_circ_001 : Prop :=\n  ¬ Hatchery.Defs.InAC0 Hatchery.Defs.parity\n",
     );
     expect(await review.propose("decomposer-1", { ...base, title: "t", prop: "TRIVIAL = TRIVIAL" })).toMatchObject({ id: "L-circ-002", status: "rejected", rejectReason: "trivial: closed automatically by decide" });
     expect(await review.propose("decomposer-1", { ...base, title: "b", prop: "BROKEN" })).toMatchObject({ status: "rejected", rejectReason: expect.stringMatching(/^does not elaborate/) });
@@ -383,7 +399,7 @@ describe("decomposer: proposals go to the review queue; only approved statements
     await desk.registerAgent("decomposer-1", "fake-model");
     const p = await review.propose("decomposer-1", {
       program: "proof-complexity", title: "helper", imports: ["Defs.Core.Resolution"], rationale: "split of L-core-001",
-      prop: "Hatchery.Defs.CNF.Unsat (Hatchery.Defs.php 2 1)", parentId: ctx!.lemmaId, splitRequestId,
+      prop: "Hatchery.Defs.CNF.Unsat (Hatchery.Defs.php 3 2)", parentId: ctx!.lemmaId, splitRequestId,
     });
     const [sr] = await db.select().from(splitRequests).where(eq(splitRequests.id, splitRequestId));
     expect(sr).toMatchObject({ status: "done", proposals: [p.id] });

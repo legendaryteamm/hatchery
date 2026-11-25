@@ -21,6 +21,8 @@ const env = z
     WORKER_IDLE_SLEEP_SECONDS: z.coerce.number().positive().default(30),
     WORKER_SLEEP_POLL_SECONDS: z.coerce.number().positive().default(60),
     WORKER_REPLY_WAIT_SECONDS: z.coerce.number().nonnegative().default(120),
+    /** Only lease lemmas of this program (e.g. definition-sanity); empty = any. */
+    WORKER_PROGRAM: z.string().default(""),
   })
   .parse(process.env);
 
@@ -46,6 +48,7 @@ const agent = new Agent(desk, provider, {
   killSwitch: () => process.env.KILL_SWITCH === "1",
   shouldStop: () => stopping,
   log: (msg, extra) => console.log(JSON.stringify({ t: new Date().toISOString(), agent: env.AGENT_ID, msg, ...extra })),
+  ...(env.WORKER_PROGRAM ? { program: env.WORKER_PROGRAM } : {}),
 });
 const result = await agent.run();
 console.log(JSON.stringify({ t: new Date().toISOString(), agent: env.AGENT_ID, msg: "run finished", ...result }));

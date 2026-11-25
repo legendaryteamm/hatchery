@@ -40,7 +40,7 @@ export const TOOLS: ToolDef[] = [
   },
   {
     name: "request_split",
-    description: "Ask the decomposer to split this lemma into smaller statements (they still need human approval before anyone can work on them). Use it when the lemma is too big for one proof.",
+    description: "Ask the decomposer to split this lemma into smaller statements (they still need to pass the AI review before anyone can work on them). Use it when the lemma is too big for one proof.",
     inputSchema: obj({ reason: { type: "string", description: `Which smaller steps you think it needs (max ${MESSAGE_LIMITS.body} characters).` } }),
   },
   {
@@ -84,7 +84,7 @@ export async function runTool(desk: DeskClient, attemptId: number, name: string,
       }
       case "request_split": {
         const r = await desk.requestSplit(attemptId, str("reason").slice(0, MESSAGE_LIMITS.body));
-        return { kind: "result", isError: false, content: `Split request #${r.splitRequestId} recorded. The decomposer will propose smaller statements; a human approves them before they can be leased.` };
+        return { kind: "result", isError: false, content: `Split request #${r.splitRequestId} recorded. The decomposer will propose smaller statements; they must pass the AI review before they can be leased.` };
       }
       case "read_file":
         return { kind: "result", content: await desk.readFile(str("path")), isError: false };

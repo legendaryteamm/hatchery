@@ -238,3 +238,59 @@ export async function report(rawResult: unknown, env: ReportEnv): Promise<{ outc
   log(`PR #${pr.number}: ci=${ciPass ? "pass" : "fail"} desk=${desk?.result ?? "-"} ${outcome.merge ? "merged" : `not merged: ${outcome.why}`}`);
   return { outcome, commented: true, mergedCommit };
 }
+
+// ------------------------------------------------------------------ public review flags (GitHub issues)
+
+export const FLAG_TARGET_RE = /^(Defs(?:\.[A-Za-z0-9_]+)+|L(?:-[a-z0-9]+)+)$/;
+
+/**
+ * Read the review-flag issue form (.github/ISSUE_TEMPLATE/review-flag.yml): the first section is
+ * the target (a definition module like Defs.Core.Circuit, or a statement id like L-circ-014), the
+ * second the reason. The body is untrusted text: only the id is parsed out; the reason is passed on
+ * as data, cut to 4000 characters.
+ */
+export function parseFlagIssue(body: string): { targetId: string; reason: string } | { error: string } {
+  const sections = body.split(/^###\s+/m).slice(1).map((s) => s.split("\n").slice(1).join("\n").trim());
+  const first = (sections[0] ?? "").split(/\s+/)[0]?.replace(/[`*]/g, "") ?? "";
+  if (!FLAG_TARGET_RE.test(first)) return { error: "the first field must be a definition module (e.g. Defs.Core.Circuit) or a statement id (e.g. L-circ-014)" };
+  return { targetId: first, reason: (sections[1] ?? "").slice(0, 4000) };
+}
+
+export interface FlagEnv {
+  github: GitHub;
+  githubToken: string;
+  deskUrl?: string;
+  deskToken?: string;
+  siteUrl?: string;
+  fetchFn?: typeof fetch;
+}
+
+/** The review-flag workflow: send the flag to the desk and answer on the issue. */
+export async function flagFromIssue(event: { issue?: { number: number; body?: string | null; user?: { login?: string }; labels?: { name: string }[] } }, env: FlagEnv): Promise<{ result: string; message: string }> {
+  const issue = event.issue;
+  if (!issue?.user?.login) throw new Error("not an issue event");
+  if (!issue.labels?.some((l) => l.name === "review-flag")) return { result: "ignored", message: "not a review flag" };
+  const parsed = parseFlagIssue(issue.body ?? "");
+  let answer: { result: string; message: string };
+  if ("error" in parsed) {
+    answer = { result: "refused", message: parsed.error };
+  } else if (!env.deskUrl || !env.deskToken) {
+    answer = { result: "refused", message: "the desk is not connected to this repository yet (DESK_URL); a maintainer will look at this issue" };
+  } else {
+    const r = await (env.fetchFn ?? fetch)(`${env.deskUrl.replace(/\/$/, "")}/contrib/flags`, {
+      method: "POST",
+      headers: { authorization: `Bearer ${env.deskToken}`, "content-type": "application/json" },
+      body: JSON.stringify({ issueNumber: issue.number, login: issue.user.login, targetId: parsed.targetId, reason: parsed.reason }),
+      signal: AbortSignal.timeout(60_000),
+    });
+    if (!r.ok) throw new Error(`desk answered ${r.status}: ${(await r.text()).slice(0, 300)} (re-run this workflow to retry)`);
+    answer = (await r.json()) as { result: string; message: string };
+  }
+  const page = !("error" in parsed) && env.siteUrl ? `\n\nEvery review step, with the reviewers' reasoning: ${env.siteUrl.replace(/\/$/, "")}/${parsed.targetId.startsWith("Defs.") ? `definitions/${parsed.targetId}` : `lemmas/${parsed.targetId}`}` : "";
+  const text =
+    answer.result === "accepted" || answer.result === "attached"
+      ? `Thank you. ${answer.message}. AI reviewer agents will look at it again, with your text as input (never as instructions).${page}`
+      : `Not sent to review: ${answer.message}.`;
+  await env.github.comment(issue.number, `${text}\n\n<sub>Definitions and statements here are reviewed by AI agents, not by a human mathematician.</sub>`, env.githubToken);
+  return answer;
+}
