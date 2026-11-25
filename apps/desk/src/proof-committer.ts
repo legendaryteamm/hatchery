@@ -2,7 +2,7 @@
  * Writes every accepted proof to lean/Proofs/<L>.lean and commits it (only that path) with a bot
  * identity. Removes it again when a re-check fails.
  *
- * WHERE (docs/deploy.md, "Where bot commits go"):
+ * WHERE (docs/deploy.md, section 13 "How proofs get into the repository"):
  *   sandbox  (default)  a throwaway clone made on first use; the real checkout is never touched
  *   commit / write      the real checkout; config refuses these unless HATCHERY_REAL_RUN=1
  *   off                 database only

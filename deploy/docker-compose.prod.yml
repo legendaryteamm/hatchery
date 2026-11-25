@@ -1,0 +1,87 @@
+# Production overrides for ONE VPS (docs/deploy.md). Use with the base file:
+#   docker compose -f docker-compose.yml -f deploy/docker-compose.prod.yml up -d
+# Differences from development:
+#   - Caddy (service "web") is the only thing reachable from the internet (ports 80/443);
+#     postgres, the judge and the desk listen on the internal network only;
+#   - everything restarts on failure and after a reboot; logs rotate;
+#   - the judge uses the full (Mathlib) runner image, built on this server;
+#   - the desk commits accepted proofs into this checkout and the proof bot pushes them.
+x-logging: &logging
+  driver: json-file
+  options:
+    max-size: "20m"
+    max-file: "5"
+
+services:
+  postgres:
+    ports: !reset []
+    restart: unless-stopped
+    logging: *logging
+    environment:
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD in .env}
+
+  lean-runner:
+    logging: *logging
+
+  judge:
+    ports: !reset []
+    restart: unless-stopped
+    logging: *logging
+    environment:
+      JUDGE_IMAGE: hatchery-lean-runner:${JUDGE_FLAVOR:-full}
+      JUDGE_API_TOKEN: ${JUDGE_API_TOKEN:?set JUDGE_API_TOKEN in .env}
+
+  desk:
+    ports: !reset []
+    restart: unless-stopped
+    logging: *logging
+    environment:
+      DESK_WORKER_TOKEN: ${DESK_WORKER_TOKEN:?set DESK_WORKER_TOKEN in .env}
+      PUBLIC_SITE_URL: https://${SITE_DOMAIN:?set SITE_DOMAIN in .env}
+      TRUST_PROXY: "1"
+      DEV_LOGIN: "0"
+      # A real run on the server: accepted proofs are committed here and pushed by the proof bot.
+      PROOF_COMMIT_MODE: commit
+      HATCHERY_REAL_RUN: "1"
+      PROOF_PUSH: ${PROOF_PUSH:-1}
+      GIT_SSH_COMMAND: ssh -i /run/secrets/proof_bot_deploy_key -o IdentitiesOnly=yes -o UserKnownHostsFile=/run/secrets/known_hosts -o StrictHostKeyChecking=yes
+    volumes:
+      - .:/repo:rw
+      - ${SECRETS_DIR:-/srv/hatchery/secrets}/proof_bot_deploy_key:/run/secrets/proof_bot_deploy_key:ro
+      - ${SECRETS_DIR:-/srv/hatchery/secrets}/known_hosts:/run/secrets/known_hosts:ro
+
+  worker:
+    restart: unless-stopped
+    logging: *logging
+
+  decomposer:
+    restart: unless-stopped
+    logging: *logging
+
+  indexer:
+    logging: *logging
+
+  web:
+    build:
+      context: .
+      dockerfile: apps/web/Dockerfile
+    image: hatchery-web:prod
+    depends_on:
+      desk:
+        condition: service_started
+    environment:
+      SITE_DOMAIN: ${SITE_DOMAIN:?set SITE_DOMAIN in .env}
+      ACME_EMAIL: ${ACME_EMAIL:?set ACME_EMAIL in .env}
+    ports:
+      - "80:80"
+      - "443:443"
+      - "443:443/udp"
+    volumes:
+      - caddy_data:/data
+      - caddy_config:/config
+    restart: unless-stopped
+    logging: *logging
+
+volumes:
+  caddy_data:
+  caddy_config:

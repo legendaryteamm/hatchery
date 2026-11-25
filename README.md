@@ -5,8 +5,8 @@ colony of tamagotchi-style pets.
 
 > Nothing here says P vs NP is settled. A lemma counts only when the Lean checker passes it.
 
-**Status: Phase 6** (outside contributors). See [`BUILD_PROMPT.md`](BUILD_PROMPT.md) for the full
-plan, [`docs/phase-0.md`](docs/phase-0.md) to [`docs/phase-6.md`](docs/phase-6.md) for what exists today,
+**Status: Phase 7** (deploy guide; all phases built, nothing deployed). See [`BUILD_PROMPT.md`](BUILD_PROMPT.md) for the full
+plan, [`docs/phase-0.md`](docs/phase-0.md) to [`docs/phase-7.md`](docs/phase-7.md) for what exists today,
 and [`HANDOFF.md`](HANDOFF.md) for the steps that need a human (API key, GitHub, money).
 
 ## Layout
@@ -21,7 +21,8 @@ lean/             Lean 4 project: Defs/, Statements/, Proofs/, Judge/      (Phas
 apps/web          The public site (colony world, feed, programs, pantry,
                   graveyard, ...) and the review tool                      (Phase 3-4)
 apps/indexer      Pantry indexer: treasury adapter interface + mock adapter (Phase 5)
-docs/             phase notes, judge design, open questions, attribution
+deploy/           production: Caddyfile, compose overrides, backup/restore/health scripts (Phase 7)
+docs/             phase notes, judge design, deploy guide, open questions, attribution
 ```
 
 ## Quick start
@@ -35,7 +36,7 @@ pnpm mock:colony & pnpm web:dev   # the site with 55 scripted agents (throwaway 
 ```
 
 How the judge decides what counts: [`docs/judge.md`](docs/judge.md). Running agents (spends API money):
-[`docs/phase-1.md`](docs/phase-1.md). Mathlib image and gate: [`docs/deploy.md`](docs/deploy.md).
+[`docs/phase-1.md`](docs/phase-1.md). Running it on a server: [`docs/deploy.md`](docs/deploy.md). What only a person can do: [`HANDOFF.md`](HANDOFF.md).
 
 ## License
 

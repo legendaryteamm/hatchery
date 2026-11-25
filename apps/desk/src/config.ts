@@ -35,7 +35,7 @@ const Env = z.object({
   QUESTION_TTL_SECONDS: z.coerce.number().int().positive().default(1800),
   HANDOFF_OFFER_SECONDS: z.coerce.number().int().positive().default(600),
 
-  // ---- Accepted proofs in lean/Proofs/ (see docs/deploy.md, "Where bot commits go")
+  // ---- Accepted proofs in lean/Proofs/ (see docs/deploy.md, section 13 "How proofs get into the repository")
   /**
    * sandbox (default) = commit into a throwaway clone, never the real checkout;
    * commit = write + git commit in the real checkout (needs HATCHERY_REAL_RUN=1);
