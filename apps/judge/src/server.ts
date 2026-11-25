@@ -9,6 +9,7 @@ import { timingSafeEqual } from "node:crypto";
 import { JudgeRequestSchema, MAX_PROOF_BYTES } from "@hatchery/shared";
 import type { JudgeConfig } from "./config.ts";
 import { judge, type JudgeOptions } from "./judge.ts";
+import { runnerInfo, searchLibrary, SEARCH_QUERY_RE, type RunnerInfo } from "./info.ts";
 
 /** Small FIFO semaphore: at most `limit` checks run at once, at most `queueMax` wait. */
 export class Limiter {
@@ -44,10 +45,27 @@ export function buildServer(config: JudgeConfig, opts: JudgeOptions = {}): Fasti
   const app = Fastify({ logger: { level: process.env.LOG_LEVEL ?? "info" }, bodyLimit: MAX_PROOF_BYTES * 2 });
   const limiter = new Limiter(config.concurrency, config.queueMax);
 
-  app.get("/health", async () => ({ ok: true, image: config.image, queued: limiter.queued }));
+  let info: RunnerInfo | null = null;
+  const getInfo = async () => (info ??= await runnerInfo(config.image, opts.runner));
+  const authorized = (header: string | undefined) => !config.apiToken || tokenOk(header, config.apiToken);
+
+  app.get("/health", async (_req, reply) => {
+    try {
+      return { ok: true, image: config.image, queued: limiter.queued, ...(await getInfo()) };
+    } catch (err) {
+      return reply.code(503).send({ ok: false, image: config.image, error: (err as Error).message });
+    }
+  });
+
+  app.get("/search", async (request, reply) => {
+    if (!authorized(request.headers.authorization)) return reply.code(401).send({ error: "unauthorized" });
+    const q = (request.query as { q?: unknown }).q;
+    if (typeof q !== "string" || !SEARCH_QUERY_RE.test(q)) return reply.code(400).send({ error: "q must be 2-100 printable ASCII characters" });
+    return { results: await searchLibrary(config.image, q, opts.runner) };
+  });
 
   app.post("/check", async (request, reply) => {
-    if (config.apiToken && !tokenOk(request.headers.authorization, config.apiToken)) {
+    if (!authorized(request.headers.authorization)) {
       return reply.code(401).send({ error: "unauthorized" });
     }
     const parsed = JudgeRequestSchema.safeParse(request.body);

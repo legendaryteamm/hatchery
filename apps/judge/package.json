@@ -4,6 +4,7 @@
   "private": true,
   "license": "Apache-2.0",
   "type": "module",
+  "exports": { ".": "./src/index.ts" },
   "scripts": {
     "start": "tsx src/main.ts",
     "dev": "tsx watch src/main.ts",

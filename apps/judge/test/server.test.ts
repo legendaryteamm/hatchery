@@ -11,7 +11,8 @@ const report = { imports: ["Init"], isModule: false, constants: ["Proof.L_fixtur
   theoremFound: true, theoremKind: "theorem", typeDefEq: "yes", axioms: [], missing: [], error: "" };
 const fakeRunner: ContainerRunner = async (_image, args) => ({
   exitCode: 0, stderr: "", timedOut: false, oomKilled: false, stdoutOverflow: false,
-  stdout: Buffer.from(args[0] === "compile" ? "OLEAN" : `HATCHERY_TYPECHECK ok\nHATCHERY_REPORT ${JSON.stringify(report)}\n`),
+  stdout: Buffer.from(args[0] === "version" ? `Lean (version 4.36.0, x)\nflavor=lite\ntrusted_sha=${"a".repeat(64)}\n`
+    : args[0] === "search" ? "Init/Foo.lean:1:theorem foo" : args[0] === "compile" ? "OLEAN" : `HATCHERY_TYPECHECK ok\nHATCHERY_LEANCHECKER ok\nHATCHERY_REPORT ${JSON.stringify(report)}\n`),
 });
 const source = "import Statements.L_fixture_001\ntheorem Proof.L_fixture_001 : Statement.L_fixture_001 := fun n => Nat.add_zero n\n";
 
@@ -31,9 +32,18 @@ describe("judge HTTP API", () => {
   it("returns a verdict", async () => {
     const res = await post({ lemmaId: "L-fixture-001", source });
     expect(res.statusCode).toBe(200);
-    expect(res.json()).toMatchObject({ verdict: "pass", leanName: "L_fixture_001", stage: "done", reasons: [] });
+    expect(res.json()).toMatchObject({
+      verdict: "pass", leanName: "L_fixture_001", stage: "done", reasons: [],
+      checkers: { judgecheck: "pass", leanchecker: "pass" },
+    });
   });
-  it("health", async () => {
-    expect((await app.inject({ method: "GET", url: "/health" })).json()).toMatchObject({ ok: true });
+  it("health reports the runner flavor and trusted hash", async () => {
+    expect((await app.inject({ method: "GET", url: "/health" })).json()).toMatchObject({ ok: true, flavor: "lite", trustedSha: "a".repeat(64) });
+  });
+  it("search validates and requires the token", async () => {
+    const auth = { authorization: "Bearer secret" };
+    expect((await app.inject({ method: "GET", url: "/search?q=foo" })).statusCode).toBe(401);
+    expect((await app.inject({ method: "GET", url: "/search?q=" + "x".repeat(101), headers: auth })).statusCode).toBe(400);
+    expect((await app.inject({ method: "GET", url: "/search?q=foo", headers: auth })).json()).toEqual({ results: "Init/Foo.lean:1:theorem foo" });
   });
 });

@@ -1,8 +1,9 @@
-# Local development stack. Phase 0: postgres + Lean judge.
-# desk, workers, web and indexer are added in later phases (see BUILD_PROMPT.md section 3).
+# Local development stack (Phase 1): postgres, Lean judge, desk, and one worker (opt-in).
+# web and indexer are added in later phases (see BUILD_PROMPT.md section 3).
 #
-#   JUDGE_FLAVOR=lite docker compose up judge     # Lean core only (fast, ~1 GB)
-#   docker compose up judge                       # pinned Mathlib (default; ~7-8 GB image)
+#   JUDGE_FLAVOR=lite docker compose up -d desk            # postgres + judge + desk (no model calls)
+#   JUDGE_FLAVOR=lite docker compose --profile agents up worker   # one agent: SPENDS API MONEY
+# JUDGE_FLAVOR defaults to full (pinned Mathlib, ~7-8 GB): build that one in the cloud (docs/deploy.md).
 name: hatchery
 
 services:
@@ -60,6 +61,53 @@ services:
       interval: 10s
       timeout: 5s
       retries: 5
+
+  desk:
+    build:
+      context: .
+      dockerfile: apps/desk/Dockerfile
+    image: hatchery-desk:dev
+    depends_on:
+      postgres:
+        condition: service_healthy
+      judge:
+        condition: service_healthy
+    environment:
+      DATABASE_URL: postgres://hatchery:${POSTGRES_PASSWORD:-hatchery-dev-only}@postgres:5432/hatchery
+      JUDGE_URL: http://judge:4100
+      JUDGE_API_TOKEN: ${JUDGE_API_TOKEN:-}
+      DESK_WORKER_TOKEN: ${DESK_WORKER_TOKEN:-}
+      MATHLIB_LEMMAS_ENABLED: ${MATHLIB_LEMMAS_ENABLED:-0}
+      GIT_COMMIT: ${GIT_COMMIT:-unknown}
+      LEASE_TTL_MINUTES: ${LEASE_TTL_MINUTES:-30}
+      AGENT_MAX_ATTEMPTS_PER_LEMMA: ${AGENT_MAX_ATTEMPTS_PER_LEMMA:-3}
+    volumes:
+      # Trusted statements/defs are read from the checkout, read-only.
+      - ./lean:/app/lean:ro
+    ports:
+      - "127.0.0.1:4200:4200"
+
+  # Opt-in: `--profile agents`. Every model call costs money and is recorded in model_calls.
+  worker:
+    profiles: ["agents"]
+    build:
+      context: .
+      dockerfile: apps/worker/Dockerfile
+    image: hatchery-worker:dev
+    depends_on:
+      desk:
+        condition: service_started
+    environment:
+      DESK_URL: http://desk:4200
+      DESK_WORKER_TOKEN: ${DESK_WORKER_TOKEN:-}
+      ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:-}
+      AGENT_ID: ${AGENT_ID:-agent-1}
+      AGENT_MODEL: ${AGENT_MODEL:-}
+      AGENT_MAX_TURNS: ${AGENT_MAX_TURNS:-20}
+      AGENT_EFFORT: ${AGENT_EFFORT:-high}
+      WORKER_MAX_RUN_USD: ${WORKER_MAX_RUN_USD:-5}
+      KILL_SWITCH: ${KILL_SWITCH:-0}
+    restart: "no"
 
 volumes:
   pgdata:

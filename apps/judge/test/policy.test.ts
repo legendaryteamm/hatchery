@@ -50,7 +50,8 @@ describe("staticChecks", () => {
   it("allowlists imports", () => {
     expect(codes("import Mathlib\n" + ok)).toEqual([]);
     expect(codes("import Mathlib.Tactic.Ring\n" + ok)).toEqual([]);
-    expect(codes("import Proofs.L_other_001\n" + ok)).toEqual([]);
+    expect(codes("import Proofs.L_other_001\n" + ok)).toContain("forbidden_import"); // not a supplied checked dep
+    expect(staticChecks("import Proofs.L_other_001\n" + ok, L, new Set(["L_other_001"]))).toEqual([]);
     expect(codes("import Lean\n" + ok)).toContain("forbidden_import");
     expect(codes("import Judge.Main\n" + ok)).toContain("forbidden_import");
     expect(codes("import Std.Data.HashMap\n" + ok)).toContain("forbidden_import");
@@ -71,6 +72,8 @@ describe("helpers", () => {
     expect(importAllowed("Statements.L_x")).toBe(true);
     expect(importAllowed("Statements")).toBe(false);
     expect(importAllowed("Lean.Elab")).toBe(false);
+    expect(importAllowed("Proofs.L_x")).toBe(false);
+    expect(importAllowed("Proofs.L_x", new Set(["L_x"]))).toBe(true);
   });
   it("namespace check", () => {
     expect(inOwnNamespace("Proof.L_x", "L_x")).toBe(true);
@@ -115,17 +118,26 @@ describe("evaluateCheck", () => {
     expect(evalCodes({ unsafeOrPartial: ["Proof.L_fixture_001.f"] })).toContain("unsafe_declaration");
     expect(evalCodes({ error: "boom" })).toEqual(["runner_error"]);
   });
+  it("requires the second checker to pass", () => {
+    expect(evaluateCheck(base, { ok: true, log: "" }, L, new Set(), { ok: false, log: "x" }).map((r) => r.code)).toEqual(["second_checker_failed"]);
+  });
+  it("only allows imports of supplied checked proofs", () => {
+    expect(evalCodes({ imports: ["Init", "Proofs.L_dep_001"] })).toContain("forbidden_import");
+    expect(evaluateCheck({ ...base, imports: ["Init", "Proofs.L_dep_001"] }, { ok: true, log: "" }, L, new Set(["L_dep_001"]))).toEqual([]);
+  });
 });
 
 describe("parseCheckOutput", () => {
   it("parses marker lines", () => {
-    const out = `HATCHERY_TYPECHECK fail\nHATCHERY_TYPECHECK_LOG a\nHATCHERY_TYPECHECK_LOG b\nHATCHERY_REPORT ${JSON.stringify(base)}\n`;
+    const out = `HATCHERY_TYPECHECK fail\nHATCHERY_TYPECHECK_LOG a\nHATCHERY_TYPECHECK_LOG b\nHATCHERY_LEANCHECKER fail\nHATCHERY_LEANCHECKER_LOG boom\nHATCHERY_REPORT ${JSON.stringify(base)}\n`;
     const p = parseCheckOutput(out);
     expect(p?.typecheck).toEqual({ ok: false, log: "a\nb" });
+    expect(p?.leanchecker).toEqual({ ok: false, log: "boom" });
     expect(p?.report.axioms).toEqual(["propext"]);
   });
   it("returns null on missing or garbled output", () => {
     expect(parseCheckOutput("HATCHERY_TYPECHECK ok\n")).toBeNull();
+    expect(parseCheckOutput(`HATCHERY_TYPECHECK ok\nHATCHERY_REPORT ${JSON.stringify(base)}\n`)).toBeNull(); // leanchecker result missing
     expect(parseCheckOutput("HATCHERY_TYPECHECK ok\nHATCHERY_REPORT {nope")).toBeNull();
   });
 });

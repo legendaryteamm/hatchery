@@ -10,6 +10,9 @@
     "runner:build:lite": "docker build -f apps/judge/runner/Dockerfile --build-arg FLAVOR=lite -t hatchery-lean-runner:lite .",
     "runner:build:full": "docker build -f apps/judge/runner/Dockerfile --build-arg FLAVOR=full -t hatchery-lean-runner:full .",
     "judge:check": "pnpm --filter @hatchery/judge cli check",
-    "judge:sample": "pnpm --filter @hatchery/judge sample"
+    "judge:sample": "pnpm --filter @hatchery/judge sample",
+    "desk": "pnpm --filter @hatchery/desk cli",
+    "desk:start": "pnpm --filter @hatchery/desk start",
+    "worker:start": "pnpm --filter @hatchery/worker start"
   }
 }

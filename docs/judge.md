@@ -13,12 +13,15 @@ POST /check {lemmaId, source}          (apps/judge, Fastify; or the CLI)
   │     banned words, set_option allowlist, import allowlist, `theorem Proof.<L> ` present
   │
   ├─ 2. container #1: runner.sh compile   ← untrusted code runs here
-  │     source on stdin → `lean Submission.lean -o Submission.olean` → olean bytes on stdout
+  │     tar on stdin: Submission.lean + checked deps (Proofs/<L_dep>.lean, deps.txt)
+  │     compile deps, then `lean Submission.lean -o Submission.olean` → olean bytes on stdout
   │
-  ├─ 3. container #2: runner.sh check <L> ← fresh container, olean on stdin (treated as untrusted)
+  ├─ 3. container #2: runner.sh check <L> ← fresh container; tar with the olean (untrusted) + dep sources
+  │     deps are RECOMPILED here from their pinned, trusted sources
   │     a) Check.lean:  import Statements.<L>; import Submission
   │                     example : Statement.<L> := Proof.<L>
-  │     b) judgecheck (lean/Judge/Main.lean):
+  │     b) leanchecker Submission   (second checker: Lean's built-in lean4checker)
+  │     c) judgecheck (lean/Judge/Main.lean):
   │        - reads the olean's constants WITHOUT trusting its metadata
   │        - base env = submission's imports + Statements.<L> (trusted oleans only)
   │        - Kernel.Environment.replay of every submitted constant
@@ -26,7 +29,8 @@ POST /check {lemmaId, source}          (apps/judge, Fastify; or the CLI)
   │        - axioms collected by walking terms in the replayed kernel env
   │
   └─ 4. policy on the report (TypeScript): allowed axioms {propext, Classical.choice, Quot.sound},
-        imports, all declarations under Proof.<L>, no unsafe/partial, replay ok, types match
+        imports, all declarations under Proof.<L>, no unsafe/partial, replay ok, types match,
+        leanchecker ok. verdict = pass only if judgecheck AND leanchecker pass.
 ```
 
 Why two containers: anything the submission does at compile time (in theory, if it slipped past
@@ -49,7 +53,14 @@ lists from imported oleans (`exportedAxiomsExt`). A forged olean could lie there
 `too_large, forbidden_token, forbidden_import, set_option_not_allowed, missing_theorem,
 compile_error, timeout, memory_limit, output_too_large, import_conflict, statement_mismatch,
 not_a_theorem, forbidden_axiom, unsafe_declaration, namespace_violation, replay_failed,
-runner_error` (packages/shared/src/judge.ts).
+second_checker_failed, dependency_error, runner_error` (packages/shared/src/judge.ts).
+
+## Other runner modes
+
+- `version`: Lean version, flavor, and `trusted_sha`, the hash of `lean-toolchain`, `Defs/` and
+  `Statements/` baked into the image. The desk refuses to work with a stale image.
+- `search <text>`: fixed-string grep over Lean core `Init`/`Std` (and Mathlib in the full image),
+  used by the agents' `search_library` tool.
 
 ## Static rules (deliberately strict)
 
@@ -64,7 +75,8 @@ and a mistake there would be a bypass). Agents are told to avoid these words ent
   `IO/CoreM/MetaM/TermElabM/TacticM/CommandElabM/MacroM`, `Lean.Elab/Meta/Parser/Compiler/IR`
 - `set_option` only: `maxHeartbeats, maxRecDepth, synthInstance.maxHeartbeats,
   synthInstance.maxSize, autoImplicit, relaxedAutoImplicit, linter.*`
-- imports only: `Mathlib`, `Mathlib.*`, `Defs.*`, `Statements.*`, `Proofs.*`
+- imports only: `Mathlib`, `Mathlib.*`, `Defs.*`, `Statements.*`, and `Proofs.<L>` only for checked
+  lemmas the desk supplied as dependencies (status `checked`, pinned source)
 
 These are defence in depth. The tests also run `sorry`, `axiom` and `native_decide` with static
 checks switched off, to prove the Lean-level checks reject them on their own.

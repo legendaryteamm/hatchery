@@ -59,10 +59,15 @@ export const ALLOWED_OPTIONS = new Set([
 ]);
 const ALLOWED_OPTION_PREFIXES = ["linter."];
 
-/** Import allowlist: Mathlib and our trusted Defs / Statements / checked Proofs. */
-export function importAllowed(mod: string): boolean {
+/**
+ * Import allowlist: Mathlib, our trusted Defs / Statements, and `Proofs.<L>` only for checked
+ * proofs supplied as dependencies (`allowedProofs`, Lean names).
+ */
+export function importAllowed(mod: string, allowedProofs: ReadonlySet<string> = new Set()): boolean {
   if (mod === "Init" || mod === "Mathlib") return true;
-  return /^(Mathlib|Defs|Statements|Proofs)\.[A-Za-z0-9_.']+$/.test(mod) && !mod.includes("..");
+  const proof = /^Proofs\.(L_[A-Za-z0-9_]+)$/.exec(mod);
+  if (proof) return allowedProofs.has(proof[1] ?? "");
+  return /^(Mathlib|Defs|Statements)\.[A-Za-z0-9_.']+$/.test(mod) && !mod.includes("..");
 }
 
 /** Every `import` line in the file, split into module names. */
@@ -75,7 +80,7 @@ export function parseImports(source: string): string[] {
   return mods;
 }
 
-export function staticChecks(source: string, leanName: string): JudgeReason[] {
+export function staticChecks(source: string, leanName: string, allowedProofs: ReadonlySet<string> = new Set()): JudgeReason[] {
   const reasons: JudgeReason[] = [];
   for (const b of BANNED) {
     if (b.re.test(source)) reasons.push({ code: "forbidden_token", message: `forbidden: ${b.why}` });
@@ -87,8 +92,13 @@ export function staticChecks(source: string, leanName: string): JudgeReason[] {
     }
   }
   for (const mod of parseImports(source)) {
-    if (!importAllowed(mod)) {
-      reasons.push({ code: "forbidden_import", message: `import ${mod} is not allowed (Mathlib, Defs.*, Statements.*, Proofs.* only)` });
+    if (!importAllowed(mod, allowedProofs)) {
+      reasons.push({
+        code: "forbidden_import",
+        message: mod.startsWith("Proofs.")
+          ? `import ${mod} is not allowed: only checked proofs can be imported`
+          : `import ${mod} is not allowed (Mathlib, Defs.*, Statements.*, checked Proofs.* only)`,
+      });
     }
   }
   const decl = new RegExp(`(^|\\n)\\s*theorem\\s+Proof\\.${leanName}(?![A-Za-z0-9_'!?.])`);
@@ -124,6 +134,8 @@ export function evaluateCheck(
   report: CheckReport,
   typecheck: { ok: boolean; log: string },
   leanName: string,
+  allowedProofs: ReadonlySet<string> = new Set(),
+  leanchecker: { ok: boolean; log: string } = { ok: true, log: "" },
 ): JudgeReason[] {
   const r: JudgeReason[] = [];
   const thm = `Proof.${leanName}`;
@@ -133,7 +145,7 @@ export function evaluateCheck(
   }
   if (report.isModule) r.push({ code: "forbidden_token", message: "module-system files are not supported" });
   for (const mod of report.imports) {
-    if (!importAllowed(mod)) r.push({ code: "forbidden_import", message: `compiled file imports ${mod}` });
+    if (!importAllowed(mod, allowedProofs)) r.push({ code: "forbidden_import", message: `compiled file imports ${mod}` });
   }
   if (report.unsafeOrPartial.length) {
     r.push({ code: "unsafe_declaration", message: `unsafe/partial declarations: ${report.unsafeOrPartial.join(", ")}` });
@@ -141,6 +153,9 @@ export function evaluateCheck(
   const outside = report.constants.filter((c) => !inOwnNamespace(c, leanName));
   if (outside.length) {
     r.push({ code: "namespace_violation", message: `declarations outside namespace ${thm}: ${outside.slice(0, 10).join(", ")}` });
+  }
+  if (!leanchecker.ok) {
+    r.push({ code: "second_checker_failed", message: `leanchecker rejected the module: ${leanchecker.log.slice(0, 1000)}` });
   }
   if (report.replay !== "ok") {
     const conflict = /already (been )?declared|already contains/i.test(report.replay);

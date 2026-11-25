@@ -44,6 +44,10 @@ COPY --chown=lean:lean lean/Defs ./Defs
 COPY --chown=lean:lean lean/Statements ./Statements
 COPY --chown=lean:lean lean/Proofs ./Proofs
 COPY --chown=lean:lean lean/Judge ./Judge
+# Hash of the trusted inputs baked into this image (toolchain pin, Defs, Statements). The desk
+# computes the same hash from its checkout and refuses to judge if they differ (stale image).
+RUN find lean-toolchain Defs Statements -type f \( -name '*.lean' -o -name lean-toolchain \) \
+      | LC_ALL=C sort | xargs sha256sum | sha256sum | cut -d' ' -f1 > trusted.sha256
 RUN lake build
 # Resolve every path at build time so the read-only runtime never touches elan or lake.
 RUN T="$(dirname "$(dirname "$(elan which lean)")")" \
@@ -52,6 +56,8 @@ RUN T="$(dirname "$(dirname "$(elan which lean)")")" \
       echo "export BASE_LEAN_PATH='$(lake env printenv LEAN_PATH)'"; \
       echo "export LD_LIBRARY_PATH='$(lake env printenv LD_LIBRARY_PATH)'"; \
       echo "export JUDGECHECK='/opt/hatchery/lean/.lake/build/bin/judgecheck'"; \
+      echo "export LEANCHECKER='$T/bin/leanchecker'"; \
+      echo "export LIBRARY_SRC='$T/src/lean/Init $T/src/lean/Std $(test -d .lake/packages/mathlib/Mathlib && echo /opt/hatchery/lean/.lake/packages/mathlib/Mathlib)'"; \
       echo "export PATH='$T/bin:/usr/bin:/bin'"; \
       echo "export HATCHERY_FLAVOR='$FLAVOR'"; } > /opt/hatchery/lean/runner.env
 

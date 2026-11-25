@@ -1,0 +1,76 @@
+# Builds both judge runner images and runs every judge test against each.
+#
+# GATE: real agents may only work on Mathlib lemmas while the `full` job of this workflow is green
+# on the commit the judge is deployed from (see docs/deploy.md, "Mathlib gate"). The desk enforces
+# this with MATHLIB_LEMMAS_ENABLED (off by default) plus a check that the judge reports flavor=full.
+name: judge
+
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: judge-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  unit-and-lite:
+    name: unit + lite image (Lean core)
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4.2.2
+      - uses: pnpm/action-setup@v4.0.0
+        with:
+          version: 9.15.9
+      - uses: actions/setup-node@v4.1.0
+        with:
+          node-version: 20.19.5
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile
+      - run: pnpm typecheck
+      - name: Build lite runner image
+        run: pnpm runner:build:lite
+      - name: Start postgres for desk tests
+        run: docker compose up -d --wait postgres
+      - name: All tests (unit + docker end-to-end on the lite image)
+        run: pnpm test
+        env:
+          JUDGE_TEST_IMAGE: hatchery-lean-runner:lite
+
+  full:
+    name: full image (pinned Mathlib)
+    runs-on: ubuntu-24.04
+    timeout-minutes: 90
+    steps:
+      - name: Free disk space (the Mathlib image is ~7-8 GB)
+        run: |
+          sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc /opt/hostedtoolcache/CodeQL /usr/local/share/boost
+          docker system prune -af
+          df -h /
+      - uses: actions/checkout@v4.2.2
+      - uses: pnpm/action-setup@v4.0.0
+        with:
+          version: 9.15.9
+      - uses: actions/setup-node@v4.1.0
+        with:
+          node-version: 20.19.5
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile
+      - name: Build full runner image
+        run: pnpm runner:build:full
+      - name: Judge tests against the full image (includes the Mathlib proof test)
+        run: pnpm --filter @hatchery/judge test -- test/judge.docker.test.ts
+        env:
+          JUDGE_TEST_IMAGE: hatchery-lean-runner:full
+          JUDGE_REQUIRE_FULL: "1"
+      - name: Record image digest
+        run: docker image inspect hatchery-lean-runner:full --format '{{.Id}}' | tee runner-full-digest.txt
+      - uses: actions/upload-artifact@v4.4.3
+        with:
+          name: runner-full-digest
+          path: runner-full-digest.txt
