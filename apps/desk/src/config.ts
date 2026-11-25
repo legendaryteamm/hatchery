@@ -79,6 +79,29 @@ const Env = z.object({
   /** Optional webhook for pantry alerts (Slack- and Discord-compatible JSON). Alerts are always logged and shown in the feed. */
   ALERT_WEBHOOK_URL: z.string().url().optional(),
   PANTRY_ALERT_CHECK_SECONDS: z.coerce.number().int().positive().default(60),
+
+  // ---- Phase 6: outside contributors (BUILD_PROMPT.md section 10)
+  /** GitHub OAuth app (HANDOFF.md). Sign-in with GitHub is off until both are set. */
+  GITHUB_CLIENT_ID: z.string().optional(),
+  GITHUB_CLIENT_SECRET: z.string().optional(),
+  /** Overridable only so tests can stand in for GitHub. */
+  GITHUB_OAUTH_URL: z.string().url().default("https://github.com"),
+  GITHUB_API_URL: z.string().url().default("https://api.github.com"),
+  /** Comma-separated GitHub logins allowed into /admin (case-insensitive). */
+  ADMIN_GITHUB_HANDLES: z.string().default(""),
+  /** LOCAL ONLY: sign in as any name without GitHub, to try the contributor flow. Refused unless PUBLIC_SITE_URL is http://localhost or http://127.0.0.1. */
+  DEV_LOGIN: flag,
+  CONTRIBUTOR_SESSION_DAYS: z.coerce.number().int().positive().default(30),
+  /** Bearer token the contributor CI (contrib-merge workflow) uses to report pull requests. Routes are off without it. */
+  CONTRIB_TOKEN: z.string().min(16).optional(),
+  /** "owner/name" of the GitHub repository (shown in join.txt). */
+  CONTRIB_REPO: z.string().regex(/^$|^[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+$/).default(""),
+  /** Outside leases: at most this long in total, a heartbeat at least this often (+ grace), and at most this many at once. */
+  EXTERNAL_LEASE_MAX_HOURS: z.coerce.number().positive().default(6),
+  EXTERNAL_HEARTBEAT_SECONDS: z.coerce.number().int().positive().default(2700),
+  EXTERNAL_HEARTBEAT_GRACE_SECONDS: z.coerce.number().int().nonnegative().default(900),
+  MAX_EXTERNAL_LEASES: z.coerce.number().int().nonnegative().default(20),
+  MAX_API_TOKENS_PER_CONTRIBUTOR: z.coerce.number().int().positive().default(5),
 }).superRefine((c, ctx) => {
   if ((c.PROOF_COMMIT_MODE === "commit" || c.PROOF_COMMIT_MODE === "write") && !c.HATCHERY_REAL_RUN) {
     ctx.addIssue({
@@ -86,6 +109,9 @@ const Env = z.object({
       path: ["PROOF_COMMIT_MODE"],
       message: `PROOF_COMMIT_MODE=${c.PROOF_COMMIT_MODE} writes to the real checkout. Set HATCHERY_REAL_RUN=1 to confirm this is a real run, or use PROOF_COMMIT_MODE=sandbox.`,
     });
+  }
+  if (c.DEV_LOGIN && !/^http:\/\/(localhost|127\.0\.0\.1)(:\d+)?(\/|$)/.test(c.PUBLIC_SITE_URL)) {
+    ctx.addIssue({ code: "custom", path: ["DEV_LOGIN"], message: "DEV_LOGIN=1 is for local development only: PUBLIC_SITE_URL must be http://localhost or http://127.0.0.1." });
   }
   if (c.PROOF_PUSH && !(c.PROOF_COMMIT_MODE === "commit" && c.HATCHERY_REAL_RUN)) {
     ctx.addIssue({ code: "custom", path: ["PROOF_PUSH"], message: "PROOF_PUSH=1 needs PROOF_COMMIT_MODE=commit and HATCHERY_REAL_RUN=1 (server only)." });

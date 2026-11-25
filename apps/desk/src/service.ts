@@ -20,7 +20,7 @@ import {
   type TokenUsage,
   usdToMicros,
 } from "@hatchery/shared";
-import { budgetStatus, type BudgetStatus } from "./budget.ts";
+import { budgetStatus, killSwitchState, type BudgetStatus } from "./budget.ts";
 import type { DeskConfig } from "./config.ts";
 import type { Db, Tx } from "./db/client.ts";
 import { agents, attempts, definitions, events, leases, lemmas, messages, modelCalls, pantryInflows, pantryOutflows, programs, reuses, settings, statements } from "./db/schema.ts";
@@ -494,16 +494,31 @@ export class Desk {
     });
   }
 
-  async lease(agentId: string, programSlug?: string): Promise<LeaseContext | null> {
+  /**
+   * Lease the next open lemma (or `opts.lemmaId`). Internal agents need food (budget); outside
+   * contributors spend nothing from the pantry, so for them only the kill switch matters, and their
+   * lease ends at `opts.expiresAt`. `opts.eligible` narrows the candidates (outside contributors:
+   * only statements whose file is in the repository, since their proof is checked from there).
+   */
+  async lease(
+    agentId: string,
+    programSlug?: string,
+    opts: { lemmaId?: string; external?: { expiresAt: Date }; eligible?: (lemmaId: string) => boolean } = {},
+  ): Promise<LeaseContext | null> {
     await this.assertJudgeFresh();
-    const b = await this.budget(agentId);
-    if (!b.allowed) throw new DeskError(429, `not allowed to work now: ${b.reason}`, b.reason ?? undefined);
+    if (opts.external) {
+      const kill = await killSwitchState(this.db, this.config.KILL_SWITCH);
+      if (kill.on) throw new DeskError(429, "not allowed to work now: kill_switch", "kill_switch");
+    } else {
+      const b = await this.budget(agentId);
+      if (!b.allowed) throw new DeskError(429, `not allowed to work now: ${b.reason}`, b.reason ?? undefined);
+    }
     await this.expireLeases();
     const mathlib = await this.mathlibAllowed();
     const max = this.config.AGENT_MAX_ATTEMPTS_PER_LEMMA;
     const now = this.now();
     const nowIso = now.toISOString();
-    const expiresAt = new Date(now.getTime() + this.config.LEASE_TTL_SECONDS * 1000);
+    const expiresAt = opts.external?.expiresAt ?? new Date(now.getTime() + this.config.LEASE_TTL_SECONDS * 1000);
     const states = await this.definitionStates();
     const draftDefs = [...states.values()].filter((d) => !d.effective).map((d) => d.id);
     const leased = await this.db.transaction(async (tx) => {
@@ -518,17 +533,18 @@ export class Desk {
           and (${mathlib} or not s.requires_mathlib)
           and not (s.def_imports && ${`{${draftDefs.join(",")}}`}::text[])
           and (${programSlug ?? null}::text is null or p.slug = ${programSlug ?? null})
+          and (${opts.lemmaId ?? null}::text is null or l.id = ${opts.lemmaId ?? null})
           and not (l.offered_to is not null and l.offered_to <> ${agentId} and l.offered_until > ${nowIso}::timestamptz)
           and not exists (select 1 from events e where e.type = 'abandoned_by_agent' and e.agent_id = ${agentId} and e.lemma_id = l.id)
           and (select count(*) from attempts a where a.lemma_id = l.id and a.agent_id = ${agentId} and a.result = 'failed') < ${max}
         order by offered desc, (select count(*) from attempts a where a.lemma_id = l.id) asc, l.id asc
-        limit 1
+        limit ${opts.eligible ? 200 : 1}
         for update of l skip locked`);
-      const row = rows[0];
+      const row = opts.eligible ? rows.find((r) => opts.eligible!(r.id)) : rows[0];
       if (!row) return null;
       await tx.update(lemmas).set({ status: "leased", offeredTo: null, offeredUntil: null }).where(eq(lemmas.id, row.id));
-      await tx.insert(leases).values({ lemmaId: row.id, holder: agentId, expiresAt, lastHeartbeat: now });
-      await emit(tx, "leased", { agentId, lemmaId: row.id, payload: { expiresAt: expiresAt.toISOString(), viaHandoff: row.offered } });
+      await tx.insert(leases).values({ lemmaId: row.id, holder: agentId, expiresAt, lastHeartbeat: now, createdAt: now });
+      await emit(tx, "leased", { agentId, lemmaId: row.id, payload: { expiresAt: expiresAt.toISOString(), viaHandoff: row.offered, ...(opts.external ? { external: true } : {}) } });
       return row;
     });
     return leased ? this.leaseContext(agentId, leased.id, expiresAt, leased.offered) : null;
@@ -857,10 +873,10 @@ export class Desk {
   }
 
   /** Official submission. Ends the attempt; on pass the lemma becomes "checked" and is committed to lean/Proofs/. */
-  async submit(attemptId: number, agentId: string, source: string, notes: string): Promise<JudgeVerdict> {
+  async submit(attemptId: number, agentId: string, source: string, notes: string, opts: { viaPr?: number } = {}): Promise<JudgeVerdict> {
     const a = await this.openAttempt(this.db, attemptId, agentId);
     await this.requireLease(this.db, agentId, a.lemmaId);
-    await emit(this.db, "submitted", { agentId, lemmaId: a.lemmaId, payload: { attemptId, sourceSha256: sha256(source) } });
+    await emit(this.db, "submitted", { agentId, lemmaId: a.lemmaId, payload: { attemptId, sourceSha256: sha256(source), ...(opts.viaPr ? { viaPr: opts.viaPr } : {}) } });
     let verdict: JudgeVerdict;
     let direct: string[];
     try {
@@ -898,6 +914,7 @@ export class Desk {
           checkedProofPath: `lean/Proofs/${leanName}.lean`,
           proofImports: direct,
           checkedVerdict: verdict,
+          checkedViaPr: opts.viaPr ?? null,
           handoffNote: null,
           offeredTo: null,
           offeredUntil: null,
@@ -911,13 +928,15 @@ export class Desk {
       await emit(tx, "checked", {
         agentId,
         lemmaId: a.lemmaId,
-        payload: { attemptId, axioms: verdict.axioms, checkers: verdict.checkers, reused: direct },
+        payload: { attemptId, axioms: verdict.axioms, checkers: verdict.checkers, reused: direct, ...(opts.viaPr ? { viaPr: opts.viaPr } : {}) },
       });
       for (const r of direct) {
         await tx.insert(reuses).values({ lemmaId: a.lemmaId, reusedLemmaId: r, agentId, ts: now });
         await emit(tx, "lemma_reused", { agentId, lemmaId: a.lemmaId, payload: { reused: r } });
       }
     });
+    // A contributor's proof reaches the repository through their pull request (merged by the bot), not a desk commit.
+    if (opts.viaPr) return verdict;
     await this.commitProof(
       a.lemmaId,
       source,
@@ -968,7 +987,10 @@ export class Desk {
   async reconcileProofs(): Promise<{ written: string[]; removed: string[]; deferred: string[] }> {
     const rows = await this.db.select({ l: lemmas, stmt: statements.source }).from(lemmas).innerJoin(statements, eq(statements.id, lemmas.id));
     const checked = new Map(
-      rows.filter((r) => ["checked", "recheck"].includes(r.l.status) && r.l.checkedSource).map((r) => [lemmaIdToLeanName(r.l.id), { source: r.l.checkedSource!, statement: r.stmt }]),
+      rows
+        .filter((r) => ["checked", "recheck"].includes(r.l.status) && r.l.checkedSource)
+        .filter((r) => !(r.l.checkedViaPr && !r.l.checkedCommit)) // waiting for its pull request to be merged
+        .map((r) => [lemmaIdToLeanName(r.l.id), { source: r.l.checkedSource!, statement: r.stmt }]),
     );
     const notChecked = new Set(rows.filter((r) => !["checked", "recheck"].includes(r.l.status)).map((r) => lemmaIdToLeanName(r.l.id)));
     return this.committer.reconcile(checked, notChecked);

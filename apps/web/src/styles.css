@@ -230,3 +230,10 @@ blockquote { margin: 4px 0 0 0; padding-left: 12px; border-left: 3px solid var(-
 
 /* Long addresses and hashes wrap instead of widening the page on phones. */
 .wrapcode { word-break: break-all; }
+
+/* Text inputs (join, admin) in the site's style. */
+input:not([type]), input[type="text"] {
+  font: inherit; color: var(--ink); background: var(--surface); border: 2px solid var(--line); border-radius: 10px; padding: 6px 10px; max-width: 100%;
+}
+input:not([type]):focus-visible, input[type="text"]:focus-visible { outline: 3px solid var(--sky); outline-offset: 1px; }
+code { overflow-wrap: anywhere; }

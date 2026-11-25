@@ -157,6 +157,8 @@ export const lemmas = pgTable("lemmas", {
   /** Checked lemmas this proof imports directly (`import Proofs.L_x`). */
   proofImports: text("proof_imports").array().notNull().default(sql`'{}'::text[]`),
   checkedVerdict: jsonb("checked_verdict"),
+  /** Phase 6: checked through a contributor's pull request (the merge brings the file; the desk does not commit it). */
+  checkedViaPr: integer("checked_via_pr"),
   /** ext (6b handoff): full handoff note (approaches, errors, best partial proof) for the next agent. */
   handoffNote: text("handoff_note"),
   /** ext (6b handoff): the lemma is offered first to this idle teammate until offered_until. */
@@ -308,3 +310,52 @@ export const budgetDays = pgTable("budget_days", {
   perAgentCapUsd: usd("per_agent_cap_usd").notNull(),
   spentUsd: usd("spent_usd").notNull().default("0"),
 });
+
+// ---------------------------------------------------------------- Phase 6: outside contributors
+
+/** A person who signed in with GitHub (or with the local-only dev login). */
+export const contributors = pgTable("contributors", {
+  login: text("login").primaryKey(), // GitHub login, lowercase
+  githubId: text("github_id"), // null for dev logins
+  dev: boolean("dev").notNull().default(false),
+  createdAt: ts("created_at").notNull().defaultNow(),
+  lastSeenAt: ts("last_seen_at"),
+  blockedAt: ts("blocked_at"),
+});
+
+export const contributorSessions = pgTable("contributor_sessions", {
+  tokenHash: text("token_hash").primaryKey(),
+  login: text("login").notNull().references(() => contributors.login),
+  createdAt: ts("created_at").notNull().defaultNow(),
+  expiresAt: ts("expires_at").notNull(),
+});
+
+/** API tokens for a contributor's own agent (shown once; only the hash is stored). */
+export const apiTokens = pgTable("api_tokens", {
+  id: serial("id").primaryKey(),
+  login: text("login").notNull().references(() => contributors.login),
+  tokenHash: text("token_hash").notNull().unique(),
+  label: text("label").notNull().default(""),
+  createdAt: ts("created_at").notNull().defaultNow(),
+  lastUsedAt: ts("last_used_at"),
+  revokedAt: ts("revoked_at"),
+});
+
+/** Every pull request result the CI reported (idempotent per PR head commit). */
+export const contributions = pgTable(
+  "contributions",
+  {
+    id: serial("id").primaryKey(),
+    ts: ts("ts").notNull().defaultNow(),
+    login: text("login").notNull(),
+    prNumber: integer("pr_number").notNull(),
+    headSha: text("head_sha").notNull(),
+    lemmaId: text("lemma_id").notNull(),
+    sourceSha256: text("source_sha256").notNull(),
+    result: text("result").notNull(), // pass | fail | refused
+    reason: text("reason").notNull().default(""),
+    attemptId: integer("attempt_id"),
+    mergedCommit: text("merged_commit"),
+  },
+  (t) => [uniqueIndex("contributions_pr_head_idx").on(t.prNumber, t.headSha)],
+);

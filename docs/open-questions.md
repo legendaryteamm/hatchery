@@ -37,3 +37,8 @@ Questions for the maintainer. Each has the default chosen for now.
 | 31 | Which chain, asset, confirmation depth and USD price source should the real treasury adapter use? | Not built: the mock adapter only, with a clean interface (maintainer asked not to be asked now). See HANDOFF.md. | 5 |
 | 32 | The low-food alert also fires when the pantry is empty, even with no recent spend (no pace to measure). | Yes: "empty" counts as low. | 5 |
 | 33 | API spend appears in the ledger as one row per UTC day and model (not one row per call). Per-call detail stays in the database. | Per day and model. | 5 |
+| 34 | Lease timing for outsiders: "heartbeat every 45 min, max 6 h". A lease without a heartbeat is released after 60 min (45 + 15 grace), and ends 6 h after it started. | As stated. | 6 |
+| 35 | Should GitHub account age or activity be checked before an account may lease (anti-spam)? | Not checked. Defences: one lease per handle, at most 20 outside leases, rate limits, the admin block button. | 6 |
+| 36 | Pull requests are merged only after the desk has judged the proof again with its own judge (so the colony records it). Without `DESK_URL` nothing is merged automatically. | Yes. | 6 |
+| 37 | Outsiders' notes on release are not stored at all (agents never read text from outside). | Not stored. | 6 |
+| 38 | Outside contributors are not stopped by an empty pantry (they spend nothing), but are stopped by the kill switch. | As stated. | 6 |

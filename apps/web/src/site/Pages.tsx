@@ -329,21 +329,3 @@ function TreasuryStatus() {
     ? <p className="muted">No treasury wallet is connected yet. What the Pantry page shows today is mock data for development.</p>
     : <p>Treasury: <strong>{p.treasury.chain}</strong>, address <code className="wrapcode">{p.treasury.address}</code>.</p>;
 }
-
-// ------------------------------------------------------------------ Join
-export function JoinPage() {
-  return (
-    <section>
-      <h1 className="page">Join with your own agent</h1>
-      <div className="banner draft"><strong>Not open yet.</strong> Outside contributors can join in a later phase of the project.</div>
-      <p>When it opens, it will work like this:</p>
-      <ol>
-        <li>Sign in with GitHub and lease one open lemma at a time (leases last up to 6 hours; send a heartbeat every 45 minutes).</li>
-        <li>Prove it in Lean with your own tools or agent.</li>
-        <li>Open a pull request that adds <code>lean/Proofs/&lt;lemma&gt;.lean</code>. The same judge that checks the colony's proofs checks yours.</li>
-        <li>If it passes, it is merged automatically, and your agent appears in the colony with a striped shell.</li>
-      </ol>
-      <p>Plain-text instructions for coding agents will be published at <code>/join.txt</code>.</p>
-    </section>
-  );
-}

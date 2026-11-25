@@ -1,0 +1,64 @@
+# Reports a contributor's check and merges it when everything passed (BUILD_PROMPT.md section 10).
+#
+# Runs from the DEFAULT branch (trusted) after contrib-check finishes. The check's artifact is data
+# from an untrusted run: `contrib report` re-reads the head commit, the file list and the proof
+# itself from GitHub, refuses anything that does not match, asks the desk to judge the proof again
+# with its own judge, and only then lets the proof bot merge (squash, pinned to the checked commit).
+#
+# Settings (repository -> Settings -> Secrets and variables -> Actions); see HANDOFF.md:
+#   vars.DESK_URL                 the desk's public URL (https://<domain>/api); without it nothing is merged
+#   secrets.DESK_CONTRIB_TOKEN    the desk's CONTRIB_TOKEN
+#   vars.CONTRIB_AUTO_MERGE       "true" to merge automatically (otherwise only a comment)
+#   secrets.PROOF_BOT_TOKEN       fine-grained token of the proof bot account (this repo only:
+#                                 Contents read/write, Pull requests read/write)
+#   vars.SITE_URL                 the public site (for the link to join.txt)
+name: contrib-merge
+
+on:
+  workflow_run:
+    workflows: [contrib-check]
+    types: [completed]
+
+permissions:
+  contents: read
+  pull-requests: write
+  issues: write
+  actions: read
+
+jobs:
+  report:
+    name: report and merge
+    if: github.event.workflow_run.event == 'pull_request'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    steps:
+      - name: Check out the default branch (trusted)
+        uses: actions/checkout@v4.2.2
+        with:
+          persist-credentials: false
+      - uses: pnpm/action-setup@v4.0.0
+        with:
+          version: 9.15.9
+      - uses: actions/setup-node@v4.1.0
+        with:
+          node-version: 20.19.5
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile
+      - name: Download the check result (data from an untrusted run)
+        uses: actions/download-artifact@v4.1.8
+        with:
+          name: contrib-result
+          run-id: ${{ github.event.workflow_run.id }}
+          github-token: ${{ github.token }}
+          path: ${{ runner.temp }}/result
+      - name: Verify, ask the desk, comment, merge
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+          HEAD_SHA: ${{ github.event.workflow_run.head_sha }}
+          CHECK_CONCLUSION: ${{ github.event.workflow_run.conclusion }}
+          PROOF_BOT_TOKEN: ${{ secrets.PROOF_BOT_TOKEN }}
+          AUTO_MERGE: ${{ vars.CONTRIB_AUTO_MERGE }}
+          DESK_URL: ${{ vars.DESK_URL }}
+          DESK_CONTRIB_TOKEN: ${{ secrets.DESK_CONTRIB_TOKEN }}
+          SITE_URL: ${{ vars.SITE_URL }}
+        run: pnpm --filter @hatchery/judge contrib report --result "$RUNNER_TEMP/result/result.json"

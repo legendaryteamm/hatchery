@@ -124,14 +124,32 @@ export class ProofCommitter {
     return this.git(leanDir, ["rev-parse", "HEAD"]);
   }
 
-  private async push(leanDir: string): Promise<boolean> {
-    if (!this.opts.push) return false;
+  /**
+   * Push to the server's remote. Contributor pull requests are merged on GitHub by the proof bot,
+   * so the remote can be ahead: fetch first and, if needed, rebase the desk's proof commits on top
+   * (they only add files under lean/Proofs/). Returns whether it pushed and whether HEAD moved.
+   */
+  private async push(leanDir: string): Promise<{ pushed: boolean; rebased: boolean }> {
+    if (!this.opts.push) return { pushed: false, rebased: false };
+    const { remote, branch } = this.opts.push;
+    let rebased = false;
     try {
-      await this.git(leanDir, ["push", "--quiet", this.opts.push.remote, `HEAD:${this.opts.push.branch}`]);
-      return true;
+      await this.git(leanDir, ["fetch", "--quiet", remote, branch]);
+      const upToDate = await this.git(leanDir, ["merge-base", "--is-ancestor", "FETCH_HEAD", "HEAD"]).then(() => true, () => false);
+      if (!upToDate) {
+        try {
+          await this.git(leanDir, ["rebase", "--quiet", "--autostash", "FETCH_HEAD"]);
+          rebased = true;
+        } catch (err) {
+          await this.git(leanDir, ["rebase", "--abort"]).catch(() => {});
+          throw new Error(`could not rebase onto ${remote}/${branch} (a maintainer must resolve it): ${(err as Error).message}`);
+        }
+      }
+      await this.git(leanDir, ["push", "--quiet", remote, `HEAD:${branch}`]);
+      return { pushed: true, rebased };
     } catch (err) {
       console.error(`push failed (will retry at the next commit or restart): ${(err as Error).message}`);
-      return false;
+      return { pushed: false, rebased };
     }
   }
 
@@ -152,7 +170,10 @@ export class ProofCommitter {
       writeFileSync(file, source);
       if (this.opts.mode === "write") return { commit: null, deferred: false, pushed: false };
       const commit = await this.commitPath(dir, file, message, false);
-      return { commit, deferred: false, pushed: commit ? await this.push(dir) : false };
+      if (!commit) return { commit, deferred: false, pushed: false };
+      const p = await this.push(dir);
+      // After a rebase onto merged pull requests, the proof's commit is the new HEAD.
+      return { commit: p.rebased ? await this.git(dir, ["rev-parse", "HEAD"]) : commit, deferred: false, pushed: p.pushed };
     });
   }
 

@@ -1,15 +1,18 @@
 /**
  * Desk HTTP API.
  *   /internal/*  workers (Bearer DESK_WORKER_TOKEN). Validated with zod.
- *   /admin/*     maintainers (Bearer ADMIN_TOKEN; Phase 6 replaces this with the GitHub OAuth allowlist).
- *   public       read-only views + SSE event stream (rate limited in Phase 4).
+ *   /admin/*     maintainers: a GitHub sign-in on the ADMIN_GITHUB_HANDLES allowlist, or Bearer ADMIN_TOKEN (CLI / scripts).
+ *   /auth/*, /me, /lease, /heartbeat, /release   outside contributors (GitHub sign-in; API token for their agent).
+ *   /contrib/*   the contributor CI (Bearer CONTRIB_TOKEN).
+ *   public       read-only views + SSE event stream (rate limited).
  */
 import Fastify, { type FastifyInstance, type FastifyReply, type FastifyRequest } from "fastify";
-import { timingSafeEqual } from "node:crypto";
+import { randomBytes, timingSafeEqual } from "node:crypto";
 import { and, asc, desc, eq, gt, sql } from "drizzle-orm";
 import { z } from "zod";
 import { LemmaIdSchema, MAX_PROOF_BYTES, MESSAGE_LIMITS, SLEEP_REASONS } from "@hatchery/shared";
 import { agents, attempts, events, leases, lemmas, messages, programs, statements } from "./db/schema.ts";
+import { Contributors, GITHUB_LOGIN, safeEqual } from "./contrib.ts";
 import { Review, type Reviewer } from "./review.ts";
 import { Desk, DeskError } from "./service.ts";
 import { ledger, ledgerCsv } from "./pantry.ts";
@@ -67,7 +70,7 @@ const Schemas = {
   file: z.object({ path: z.string().max(200) }),
   search: z.object({ q: z.string().regex(/^[\x20-\x7e]{2,100}$/) }),
   checked: z.object({ q: z.string().min(2).max(100) }),
-  killSwitch: z.object({ on: z.boolean(), by: z.string().min(1).max(64) }),
+  killSwitch: z.object({ on: z.boolean(), by: z.string().min(1).max(64).optional() }),
   split: z.object({ agentId: AgentId, reason: z.string().min(1).max(MESSAGE_LIMITS.body) }),
   usageOnly: z.object({ agentId: AgentId, purpose: z.enum(["decompose"]), parts: z.array(Part).min(1).max(10), requestId: z.string().max(200).optional() }),
   proposal: z.object({
@@ -110,6 +113,8 @@ const Schemas = {
 };
 
 const SESSION_COOKIE = "hatchery_review";
+const CONTRIB_COOKIE = "hatchery_session";
+const OAUTH_STATE_COOKIE = "hatchery_oauth_state";
 
 function readCookie(req: FastifyRequest, name: string): string | undefined {
   const raw = req.headers.cookie ?? "";
@@ -126,7 +131,7 @@ function tokenOk(header: string | undefined, token: string): boolean {
   return given.length === want.length && timingSafeEqual(given, want);
 }
 
-export function buildServer(desk: Desk, review: Review = new Review(desk, desk.judge)): FastifyInstance {
+export function buildServer(desk: Desk, review: Review = new Review(desk, desk.judge), contrib: Contributors = new Contributors(desk)): FastifyInstance {
   const app = Fastify({ logger: { level: process.env.LOG_LEVEL ?? "info" }, bodyLimit: MAX_PROOF_BYTES * 2, trustProxy: desk.config.TRUST_PROXY });
   const db = desk.db;
   // Public routes are rate limited per client (fixed one-minute window). Workers (token),
@@ -164,10 +169,48 @@ export function buildServer(desk: Desk, review: Review = new Review(desk, desk.j
       if (typeof id === "string" && AgentId.safeParse(id).success) await desk.touch(id);
       return fn(req, reply);
     };
-  const admin = (fn: (req: FastifyRequest, reply: FastifyReply) => Promise<unknown>) =>
+  // ---------------------------------------------------------------- who is calling (Phase 6)
+  /** A contributor: their agent's API token (Bearer hx_...), or their browser session cookie. */
+  const contributorOf = async (req: FastifyRequest): Promise<{ login: string; via: "token" | "session" } | null> => {
+    const auth = req.headers.authorization;
+    if (auth?.startsWith("Bearer hx_")) {
+      const login = await contrib.fromApiToken(auth.slice(7));
+      return login ? { login, via: "token" } : null;
+    }
+    const login = await contrib.fromSession(readCookie(req, CONTRIB_COOKIE));
+    return login ? { login, via: "session" } : null;
+  };
+  /** Cookie-authenticated writes must carry `x-hatchery: 1` (a cross-site form cannot send it). */
+  const csrfOk = (req: FastifyRequest) => req.method === "GET" || req.headers["x-hatchery"] === "1";
+  const contributorRoute = (fn: (req: FastifyRequest, reply: FastifyReply, login: string) => Promise<unknown>) =>
     async (req: FastifyRequest, reply: FastifyReply) => {
-      if (!desk.config.ADMIN_TOKEN) return reply.code(404).send({ error: "admin routes are disabled (set ADMIN_TOKEN)" });
-      if (!tokenOk(req.headers.authorization, desk.config.ADMIN_TOKEN)) return reply.code(401).send({ error: "unauthorized" });
+      const c = await contributorOf(req);
+      if (!c) return reply.code(401).send({ error: `sign in at ${desk.config.PUBLIC_SITE_URL}/join (agents: Authorization: Bearer <your API token>)` });
+      if (c.via === "session" && !csrfOk(req)) return reply.code(403).send({ error: "missing x-hatchery header" });
+      return fn(req, reply, c.login);
+    };
+  /**
+   * Admins: a signed-in GitHub account on ADMIN_GITHUB_HANDLES (the site's admin page), or the
+   * ADMIN_TOKEN bearer (CLI and scripts). `who` is recorded with what they change.
+   */
+  const admin = (fn: (req: FastifyRequest, reply: FastifyReply, who: string) => Promise<unknown>) =>
+    async (req: FastifyRequest, reply: FastifyReply) => {
+      const auth = req.headers.authorization;
+      if (auth?.startsWith("Bearer ") && !auth.startsWith("Bearer hx_")) {
+        if (!desk.config.ADMIN_TOKEN) return reply.code(401).send({ error: "unauthorized" });
+        if (!tokenOk(auth, desk.config.ADMIN_TOKEN)) return reply.code(401).send({ error: "unauthorized" });
+        return fn(req, reply, "admin-token");
+      }
+      const login = await contrib.fromSession(readCookie(req, CONTRIB_COOKIE));
+      if (!login) return reply.code(401).send({ error: "unauthorized" });
+      if (!contrib.isAdmin(login)) return reply.code(403).send({ error: "not an admin (ADMIN_GITHUB_HANDLES)" });
+      if (!csrfOk(req)) return reply.code(403).send({ error: "missing x-hatchery header" });
+      return fn(req, reply, `github:${login}`);
+    };
+  const ci = (fn: (req: FastifyRequest, reply: FastifyReply) => Promise<unknown>) =>
+    async (req: FastifyRequest, reply: FastifyReply) => {
+      if (!desk.config.CONTRIB_TOKEN) return reply.code(404).send({ error: "contributor CI routes are disabled (set CONTRIB_TOKEN)" });
+      if (!tokenOk(req.headers.authorization, desk.config.CONTRIB_TOKEN)) return reply.code(401).send({ error: "unauthorized" });
       return fn(req, reply);
     };
   /** The pantry indexer: its own token, so a worker can never record money. */
@@ -347,16 +390,119 @@ export function buildServer(desk: Desk, review: Review = new Review(desk, desk.j
 
   // ---------------------------------------------------------------- admin
   app.get("/admin/kill-switch", admin(async () => (await desk.budget(null)).killSwitch));
-  app.post("/admin/kill-switch", admin(async (req) => {
+  app.post("/admin/kill-switch", admin(async (req, _reply, who) => {
     const b = Schemas.killSwitch.parse(req.body);
-    await desk.setKillSwitch(b.on, b.by);
+    await desk.setKillSwitch(b.on, who === "admin-token" && b.by ? b.by : who);
     return (await desk.budget(null)).killSwitch;
   }));
   /** Record money leaving the treasury (a top-up of API billing, or anything else), for the public ledger. */
-  app.post("/admin/pantry/outflows", admin(async (req) => {
+  app.post("/admin/pantry/outflows", admin(async (req, _reply, who) => {
     const b = Schemas.outflow.parse(req.body);
-    return desk.recordOutflow({ ...b, by: "admin-token" });
+    return desk.recordOutflow({ ...b, by: who });
   }));
+  app.get("/admin/overview", admin(async () => {
+    const ext = await db.execute<{ lemma_id: string; holder: string; expires_at: string; last_heartbeat: string; created_at: string }>(sql`
+      select lemma_id, holder, expires_at::text, last_heartbeat::text, created_at::text from leases where holder like 'gh-%' order by created_at`);
+    const people = await db.execute<{ login: string; dev: boolean; created_at: string; blocked_at: string | null; tokens: number }>(sql`
+      select c.login, c.dev, c.created_at::text, c.blocked_at::text,
+        (select count(*) from api_tokens t where t.login = c.login and t.revoked_at is null)::int as tokens
+      from contributors c order by c.created_at desc limit 200`);
+    const prs = await db.execute(sql`select ts::text, login, pr_number, head_sha, lemma_id, result, reason, merged_commit from contributions order by id desc limit 50`);
+    return { budget: await desk.budget(null), externalLeases: ext, contributors: people, contributions: prs };
+  }));
+  app.post("/admin/contributors/:login/block", admin(async (req) => {
+    const login = z.string().regex(GITHUB_LOGIN).parse((req.params as { login: string }).login);
+    await contrib.block(login);
+    return { blocked: login.toLowerCase() };
+  }));
+
+  // ---------------------------------------------------------------- outside contributors (Phase 6)
+  const contribCookie = (name: string, value: string, maxAgeSeconds: number, sameSite: "Lax" | "Strict") =>
+    `${name}=${encodeURIComponent(value)}; Path=/; HttpOnly; SameSite=${sameSite}; Max-Age=${maxAgeSeconds}${secureCookie ? "; Secure" : ""}`;
+  const siteUrl = (path: string) => `${desk.config.PUBLIC_SITE_URL.replace(/\/$/, "")}${path}`;
+
+  app.get("/auth/config", async () => ({ github: contrib.oauthEnabled(), devLogin: desk.config.DEV_LOGIN }));
+  app.get("/auth/github/start", async (_req, reply) => {
+    if (!contrib.oauthEnabled()) return reply.code(404).send({ error: "GitHub sign-in is not configured yet (GITHUB_CLIENT_ID / GITHUB_CLIENT_SECRET)" });
+    const state = randomBytes(24).toString("base64url");
+    // SameSite=Lax: the state cookie must come back on GitHub's top-level redirect to the callback.
+    reply.header("set-cookie", contribCookie(OAUTH_STATE_COOKIE, state, 600, "Lax"));
+    return reply.redirect(contrib.authorizeUrl(state), 302);
+  });
+  app.get("/auth/github/callback", async (req, reply) => {
+    const q = z.object({ code: z.string().min(1).max(200), state: z.string().min(1).max(200) }).safeParse(req.query);
+    const want = readCookie(req, OAUTH_STATE_COOKIE);
+    const clear = contribCookie(OAUTH_STATE_COOKIE, "", 0, "Lax");
+    if (!q.success || !want || !safeEqual(q.data.state, want)) {
+      reply.header("set-cookie", clear);
+      return reply.redirect(siteUrl("/join?signin=failed"), 302);
+    }
+    try {
+      const u = await contrib.exchange(q.data.code);
+      const s = await contrib.signIn(u.login, u.githubId, false);
+      reply.header("set-cookie", [clear, contribCookie(CONTRIB_COOKIE, s.token, desk.config.CONTRIBUTOR_SESSION_DAYS * 86_400, "Lax")]);
+      return reply.redirect(siteUrl("/join"), 302);
+    } catch (err) {
+      req.log.warn({ err: (err as Error).message }, "GitHub sign-in failed");
+      reply.header("set-cookie", clear);
+      return reply.redirect(siteUrl("/join?signin=failed"), 302);
+    }
+  });
+  /** LOCAL ONLY (DEV_LOGIN=1, localhost site): sign in as any name, to try the contributor flow without GitHub. */
+  app.post("/auth/dev-login", async (req, reply) => {
+    if (!desk.config.DEV_LOGIN) return reply.code(404).send({ error: "not found" });
+    if (!csrfOk(req)) return reply.code(403).send({ error: "missing x-hatchery header" });
+    const { login } = z.object({ login: z.string().regex(GITHUB_LOGIN, "a GitHub-style login: letters, digits, single hyphens") }).parse(req.body);
+    const s = await contrib.signIn(login, null, true);
+    reply.header("set-cookie", contribCookie(CONTRIB_COOKIE, s.token, desk.config.CONTRIBUTOR_SESSION_DAYS * 86_400, "Lax"));
+    return { login: s.login, dev: true };
+  });
+  app.post("/auth/logout", async (req, reply) => {
+    if (!csrfOk(req)) return reply.code(403).send({ error: "missing x-hatchery header" });
+    const t = readCookie(req, CONTRIB_COOKIE);
+    if (t) await contrib.endSession(t);
+    reply.header("set-cookie", contribCookie(CONTRIB_COOKIE, "", 0, "Lax"));
+    return { ok: true };
+  });
+  app.get("/me", contributorRoute(async (_req, _reply, login) => {
+    const lease = await contrib.myLease(login);
+    return { login, admin: contrib.isAdmin(login), agentId: `gh-${login}`, lease: lease ? { lemmaId: lease.lemmaId, expiresAt: lease.expiresAt, createdAt: lease.createdAt } : null, tokens: await contrib.listTokens(login) };
+  }));
+  app.post("/me/tokens", contributorRoute(async (req, reply, login) => {
+    const c = await contributorOf(req);
+    if (c?.via !== "session") return reply.code(403).send({ error: "create tokens in the browser, signed in" });
+    const { label } = z.object({ label: z.string().max(60).default("") }).parse(req.body ?? {});
+    return contrib.createToken(login, label);
+  }));
+  app.delete("/me/tokens/:id", contributorRoute(async (req, _reply, login) => {
+    await contrib.revokeToken(login, idParam(req));
+    return { ok: true };
+  }));
+  app.post("/lease", contributorRoute(async (req, reply, login) => {
+    const { lemmaId } = z.object({ lemmaId: LemmaIdSchema.optional() }).parse(req.body ?? {});
+    const l = await contrib.lease(login, lemmaId);
+    return l ?? reply.code(204).send();
+  }));
+  app.post("/heartbeat", contributorRoute(async (req, _reply, login) => contrib.heartbeat(login, z.object({ lemmaId: LemmaIdSchema }).parse(req.body).lemmaId)));
+  app.post("/release", contributorRoute(async (req, _reply, login) => contrib.release(login, z.object({ lemmaId: LemmaIdSchema }).parse(req.body).lemmaId)));
+  app.get("/join.txt", async (_req, reply) => {
+    reply.header("content-type", "text/plain; charset=utf-8");
+    return contrib.joinTxt();
+  });
+
+  // ---------------------------------------------------------------- contributor CI (contrib-merge workflow)
+  const Sha = z.string().regex(/^[0-9a-f]{40}$/);
+  app.post("/contrib/submissions", ci(async (req) => {
+    const b = z.object({
+      login: z.string().regex(GITHUB_LOGIN),
+      prNumber: z.number().int().positive(),
+      headSha: Sha,
+      lemmaId: LemmaIdSchema,
+      source: Source,
+    }).parse(req.body);
+    return contrib.submission(b);
+  }));
+  app.post("/contrib/merged", ci(async (req) => contrib.merged(z.object({ prNumber: z.number().int().positive(), headSha: Sha, commit: Sha }).parse(req.body))));
 
   // ---------------------------------------------------------------- public, read-only
   app.get("/health", async () => {

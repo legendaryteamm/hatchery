@@ -6,6 +6,8 @@
  *  - Agents use the scripted test model ("fake-model"), so the site shows its "Test run" banner.
  *    Every event on the site is a real record of this scripted run; nothing is drawn without one.
  *  - Judge stand-in: a proof passes when it carries the "-- PASS" marker (no Lean, no Docker).
+ *  - Join page: a local test login (DEV_LOGIN; the name "admin" can open /admin). Outside agents
+ *    can lease with a token from /join, exactly as on the real site.
  *  - Pantry: a mock chain receives $50 every 45 s; the real indexer code picks it up and posts it to
  *    the desk's indexer API, exactly as it would for a real chain.
  *
@@ -35,6 +37,10 @@ const desk = new Desk(fresh.db, judge, repo, testConfig({
   RATE_LIMIT_PER_MINUTE: "100000",
   ACTIVE_AGENT_WINDOW_SECONDS: "120",
   INDEXER_TOKEN: "mock-colony-indexer-token",
+  // Try the contributor flow locally: /join offers a test login (localhost only), API tokens and leases work.
+  DEV_LOGIN: "1",
+  PUBLIC_SITE_URL: "http://localhost:5173",
+  ADMIN_GITHUB_HANDLES: "admin",
 }));
 await desk.syncStatements();
 await addInflow(fresh.db, 2_000);

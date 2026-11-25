@@ -95,6 +95,14 @@ services:
       TREASURY_ADDRESS: ${TREASURY_ADDRESS:-}
       INDEXER_TOKEN: ${INDEXER_TOKEN:-}
       ALERT_WEBHOOK_URL: ${ALERT_WEBHOOK_URL:-}
+      # Outside contributors (Phase 6): GitHub OAuth app, admin allowlist, the CI's token.
+      GITHUB_CLIENT_ID: ${GITHUB_CLIENT_ID:-}
+      GITHUB_CLIENT_SECRET: ${GITHUB_CLIENT_SECRET:-}
+      ADMIN_GITHUB_HANDLES: ${ADMIN_GITHUB_HANDLES:-}
+      CONTRIB_TOKEN: ${CONTRIB_TOKEN:-}
+      CONTRIB_REPO: ${CONTRIB_REPO:-}
+      DEV_LOGIN: ${DEV_LOGIN:-0}
+      TRUST_PROXY: ${TRUST_PROXY:-0}
       # Server only (docs/deploy.md): push bot commits with a repo-scoped deploy key.
       PROOF_PUSH: ${PROOF_PUSH:-0}
       PROOF_PUSH_REMOTE: ${PROOF_PUSH_REMOTE:-origin}

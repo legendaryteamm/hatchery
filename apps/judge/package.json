@@ -4,14 +4,17 @@
   "private": true,
   "license": "Apache-2.0",
   "type": "module",
-  "exports": { ".": "./src/index.ts" },
+  "exports": {
+    ".": "./src/index.ts"
+  },
   "scripts": {
     "start": "tsx src/main.ts",
     "dev": "tsx watch src/main.ts",
     "cli": "tsx src/cli.ts",
     "sample": "tsx scripts/sample.ts",
     "test": "vitest run",
-    "typecheck": "tsc -p tsconfig.json"
+    "typecheck": "tsc -p tsconfig.json",
+    "contrib": "tsx scripts/contrib.ts"
   },
   "dependencies": {
     "@hatchery/shared": "workspace:*",

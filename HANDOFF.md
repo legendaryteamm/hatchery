@@ -50,5 +50,37 @@ The items below need a person: credentials, money, or an outside service.
 - [ ] **Record every top-up** (money moved from the treasury wallet to API billing) with its tx hash and
       invoice id: `pnpm desk pantry-outflow topup_transfer <usd> "tx <hash> / invoice <id>"` (or the admin page,
       Phase 6). Once a month, compare the ledger's API spend with the provider's invoices.
+- [ ] **GitHub for outside contributors** (Phase 6). Do these in order, after the repository is on GitHub
+      and the site has its domain (docs/deploy.md). `<site>` below is your `PUBLIC_SITE_URL`, e.g. `https://hatchery.example`.
+      1. **OAuth app** (sign-in on the site). GitHub, logged in as the project owner or organisation:
+         Settings, Developer settings, OAuth Apps, *New OAuth App*.
+         - Application name: `The Hatchery`; Homepage URL: `<site>`;
+         - Authorization callback URL: `<site>/api/auth/github/callback` (exactly this);
+         - leave "Enable Device Flow" off. *Register application*, then *Generate a new client secret*.
+         - On the server, in `.env`: `GITHUB_CLIENT_ID=<Client ID>`, `GITHUB_CLIENT_SECRET=<secret>`,
+           `ADMIN_GITHUB_HANDLES=<your login>,<other maintainers>`, `CONTRIB_REPO=<owner>/<repo>`.
+           Restart the desk. `<site>/join` now shows "Sign in with GitHub". Never set `DEV_LOGIN` on the server
+           (the desk refuses to start with it on an https site anyway).
+      2. **Proof bot account** (if you did not create it for "Set up the proof bot" above): a separate GitHub account,
+         e.g. `hatchery-proof-bot`, with its own email and 2FA. Invite it to the repository with **Write** access.
+         Logged in as the bot: Settings, Developer settings, Personal access tokens, *Fine-grained tokens*, *Generate new token*:
+         - Resource owner: the repository's owner; Repository access: *Only select repositories* → this repository;
+         - Permissions: **Contents: Read and write**, **Pull requests: Read and write** (Metadata: read is automatic); nothing else;
+         - expiration: 90 days (put a reminder in your calendar to rotate it).
+      3. **Repository settings** (Settings, Secrets and variables, Actions):
+         - Secrets: `PROOF_BOT_TOKEN` = the bot's fine-grained token; `DESK_CONTRIB_TOKEN` = a new random value
+           (`openssl rand -hex 24`), and the SAME value as `CONTRIB_TOKEN` in the server's `.env`.
+         - Variables: `DESK_URL` = `<site>/api`; `SITE_URL` = `<site>`; `PROOF_BOT_LOGIN` = the bot's login;
+           `CONTRIB_AUTO_MERGE` = `false` at first (only comments), `true` once you trust it.
+      4. **Branch protection** for `main` (Settings, Rules, Rulesets, *New branch ruleset*): require a pull request
+         for changes, require the status check **"Lean judge (same runner image as the colony)"**, block force pushes.
+         Add the proof bot to the bypass list only if your plan needs it for the desk's own `lean/Proofs/` pushes.
+         Settings, Actions, General: "Fork pull request workflows from outside collaborators": *Require approval for
+         first-time contributors* (recommended), and keep the default read-only `GITHUB_TOKEN` permissions.
+      5. **Acceptance run with a test account** (the Phase 6 bar): a second GitHub account signs in at `<site>/join`,
+         creates a token, leases a lemma with `curl` (see `<site>/join.txt`), opens a PR from a fork that adds only
+         `lean/Proofs/<L>.lean`. Expected: `contrib-check` comments a verdict; with a correct proof, `contrib-merge`
+         reports "Desk … pass" and (with auto-merge on) the bot merges; the site shows the lemma as checked by `gh-<login>`.
+         Also try a PR that changes a second file: it must be refused without being judged.
 - [ ] Out of scope for Claude Code, as always (BUILD_PROMPT.md section 13): the token, wallets, fee routing,
       legal review, paying API bills, marketing.

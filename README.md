@@ -5,8 +5,8 @@ colony of tamagotchi-style pets.
 
 > Nothing here says P vs NP is settled. A lemma counts only when the Lean checker passes it.
 
-**Status: Phase 5** (the pantry). See [`BUILD_PROMPT.md`](BUILD_PROMPT.md) for the full
-plan, [`docs/phase-0.md`](docs/phase-0.md) to [`docs/phase-5.md`](docs/phase-5.md) for what exists today,
+**Status: Phase 6** (outside contributors). See [`BUILD_PROMPT.md`](BUILD_PROMPT.md) for the full
+plan, [`docs/phase-0.md`](docs/phase-0.md) to [`docs/phase-6.md`](docs/phase-6.md) for what exists today,
 and [`HANDOFF.md`](HANDOFF.md) for the steps that need a human (API key, GitHub, money).
 
 ## Layout

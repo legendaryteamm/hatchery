@@ -7,7 +7,8 @@ import { ReviewLayout } from "./review/Layout";
 import { Queue } from "./review/Queue";
 import { StatementReview } from "./review/StatementReview";
 import { Home } from "./site/Home";
-import { FeedPage, GraveyardPage, HowItWorksPage, JoinPage, LemmaPage, PantryPage, ProgramsPage, TokenPage } from "./site/Pages";
+import { AdminPage, JoinPage } from "./site/Contribute";
+import { FeedPage, GraveyardPage, HowItWorksPage, LemmaPage, PantryPage, ProgramsPage, TokenPage } from "./site/Pages";
 
 const NAV: [string, string][] = [["/", "Colony"], ["/feed", "Feed"], ["/programs", "Programs"], ["/pantry", "Pantry"], ["/graveyard", "Graveyard"], ["/how-it-works", "How it works"], ["/definitions", "Definitions"], ["/token", "Token"], ["/join", "Join"]];
 
@@ -45,6 +46,7 @@ export function App() {
           <Route path="/how-it-works" element={<HowItWorksPage />} />
           <Route path="/token" element={<TokenPage />} />
           <Route path="/join" element={<JoinPage />} />
+          <Route path="/admin" element={<AdminPage />} />
           <Route path="/definitions" element={<PublicDefinitions />} />
           <Route path="/definitions/:id" element={<PublicDefinition />} />
           <Route path="/review/join" element={<Join />} />

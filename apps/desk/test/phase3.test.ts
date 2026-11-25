@@ -149,6 +149,31 @@ describe("bot commits never touch the real checkout unless a real run is explici
     expect(co.git("diff", "--cached", "--name-only")).toBe("notes.txt");
   });
 
+  it("server push after the bot merged contributor pull requests: rebase onto the remote, then push", async () => {
+    const co = fakeCheckout();
+    const remote = mkdtempSync(join(tmpdir(), "hatchery-remote-"));
+    execFileSync("git", ["init", "-q", "--bare", "-b", "main", remote]);
+    co.git("remote", "add", "origin", remote);
+    co.git("push", "-q", "origin", "main");
+    // Meanwhile on GitHub: a contributor's proof is merged.
+    const other = mkdtempSync(join(tmpdir(), "hatchery-other-"));
+    execFileSync("git", ["clone", "-q", remote, other]);
+    mkdirSync(join(other, "lean", "Proofs"), { recursive: true });
+    writeFileSync(join(other, "lean", "Proofs", "L_core_002.lean"), "-- from pull request #12\n");
+    execFileSync("git", ["-C", other, "add", "-A"]);
+    execFileSync("git", ["-C", other, "-c", "user.name=proof-bot", "-c", "user.email=b@x", "commit", "-qm", "proof: L_core_002 (#12)"]);
+    execFileSync("git", ["-C", other, "push", "-q", "origin", "main"]);
+
+    const c = new ProofCommitter(co.lean, { mode: "commit", authorName: "Hatchery Judge", authorEmail: "j@x", push: { remote: "origin", branch: "main" } });
+    const stmt = readFileSync(join(co.lean, "Statements", "L_core_001.lean"), "utf8");
+    const r = await c.publish("L_core_001", PASS, stmt, "proof: L_core_001 checked");
+    expect(r).toMatchObject({ deferred: false, pushed: true });
+    const log = execFileSync("git", ["-C", remote, "log", "--format=%H %s", "main"], { encoding: "utf8" }).trim().split("\n");
+    expect(log.slice(0, 2).map((l) => l.slice(41))).toEqual(["proof: L_core_001 checked", "proof: L_core_002 (#12)"]);
+    expect(r.commit).toBe(log[0]!.slice(0, 40)); // the pinned commit is the one that is on the remote
+    expect(existsSync(join(co.lean, "Proofs", "L_core_002.lean"))).toBe(true); // the server checkout has the merged proof too
+  });
+
   it("reconcile never deletes proofs the database knows nothing about (fresh or restored DB)", async () => {
     const co = fakeCheckout();
     mkdirSync(join(co.lean, "Proofs"), { recursive: true });

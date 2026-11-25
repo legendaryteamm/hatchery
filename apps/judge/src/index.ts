@@ -4,3 +4,5 @@ export { runnerInfo, searchLibrary, type RunnerInfo } from "./info.ts";
 export { statementCheck } from "./statement-check.ts";
 export { requestFromRepo, statementSource, repoProofs } from "./repo.ts";
 export { dockerRunner, type ContainerRunner } from "./docker.ts";
+export * from "./contrib.ts";
+export { needsMathlib } from "./repo.ts";

@@ -1,0 +1,86 @@
+# Judges a contributor's pull request (BUILD_PROMPT.md section 10).
+#
+# SECURITY: this runs for untrusted pull requests (also from forks), so it has NO secrets and a
+# read-only token. It checks out the BASE commit and runs only the base's judge code; from the PR it
+# takes a single file, lean/Proofs/<L>.lean, as data, and judges it in the sandboxed runner image
+# (no network, non-root, limits). The result is an artifact that contrib-merge.yml (trusted) verifies
+# against GitHub before it comments or merges anything.
+name: contrib-check
+
+on:
+  pull_request:
+    paths:
+      - "lean/Proofs/**"
+
+permissions:
+  contents: read
+  pull-requests: read
+
+concurrency:
+  group: contrib-check-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+
+jobs:
+  judge:
+    name: Lean judge (same runner image as the colony)
+    runs-on: ubuntu-24.04
+    timeout-minutes: 120
+    env:
+      PR: ${{ github.event.pull_request.number }}
+      HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+    steps:
+      - name: Check out the base commit (trusted code only; the PR's code never runs)
+        uses: actions/checkout@v4.2.2
+        with:
+          ref: ${{ github.event.pull_request.base.sha }}
+          persist-credentials: false
+      - uses: pnpm/action-setup@v4.0.0
+        with:
+          version: 9.15.9
+      - uses: actions/setup-node@v4.1.0
+        with:
+          node-version: 20.19.5
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile
+      - name: Which files does the pull request change?
+        id: files
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+        run: pnpm --filter @hatchery/judge contrib files --pr "$PR" --out "$RUNNER_TEMP/files.json"
+      - name: Take the proof file from the pull request (as data)
+        if: steps.files.outputs.ok == 'true'
+        env:
+          PROOF_PATH: ${{ steps.files.outputs.path }}
+        run: |
+          git fetch --no-tags --depth=1 origin "+refs/pull/${PR}/head:refs/remotes/pr/head"
+          test "$(git rev-parse refs/remotes/pr/head)" = "$HEAD_SHA"
+          git show "${HEAD_SHA}:${PROOF_PATH}" > "$RUNNER_TEMP/proof.lean"
+      - name: Free disk space (Mathlib image)
+        if: steps.files.outputs.needs_mathlib == 'true'
+        run: |
+          sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc /opt/hostedtoolcache/CodeQL /usr/local/share/boost
+          docker system prune -af
+      - name: Build the runner image (lite, or full when the statement needs Mathlib)
+        if: steps.files.outputs.ok == 'true'
+        env:
+          NEEDS_MATHLIB: ${{ steps.files.outputs.needs_mathlib }}
+        run: |
+          if [ "$NEEDS_MATHLIB" = "true" ]; then
+            pnpm runner:build:full
+            echo "JUDGE_IMAGE=hatchery-lean-runner:full" >> "$GITHUB_ENV"
+          else
+            pnpm runner:build:lite
+            echo "JUDGE_IMAGE=hatchery-lean-runner:lite" >> "$GITHUB_ENV"
+          fi
+      - name: Judge the proof
+        run: |
+          touch "$RUNNER_TEMP/proof.lean"
+          pnpm --filter @hatchery/judge contrib check --pr "$PR" --head "$HEAD_SHA" \
+            --files "$RUNNER_TEMP/files.json" --proof "$RUNNER_TEMP/proof.lean" --out "$RUNNER_TEMP/result/result.json"
+      - uses: actions/upload-artifact@v4.4.3
+        if: always()
+        with:
+          name: contrib-result
+          path: ${{ runner.temp }}/result/result.json
+          retention-days: 7
+          if-no-files-found: ignore
