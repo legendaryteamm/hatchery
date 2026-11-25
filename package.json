@@ -1,0 +1,15 @@
+{
+  "name": "hatchery",
+  "private": true,
+  "license": "Apache-2.0",
+  "packageManager": "pnpm@9.15.9",
+  "engines": { "node": ">=20.11" },
+  "scripts": {
+    "test": "pnpm -r --workspace-concurrency=1 test",
+    "typecheck": "pnpm -r typecheck",
+    "runner:build:lite": "docker build -f apps/judge/runner/Dockerfile --build-arg FLAVOR=lite -t hatchery-lean-runner:lite .",
+    "runner:build:full": "docker build -f apps/judge/runner/Dockerfile --build-arg FLAVOR=full -t hatchery-lean-runner:full .",
+    "judge:check": "pnpm --filter @hatchery/judge cli check",
+    "judge:sample": "pnpm --filter @hatchery/judge sample"
+  }
+}

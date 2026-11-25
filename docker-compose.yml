@@ -1,0 +1,65 @@
+# Local development stack. Phase 0: postgres + Lean judge.
+# desk, workers, web and indexer are added in later phases (see BUILD_PROMPT.md section 3).
+#
+#   JUDGE_FLAVOR=lite docker compose up judge     # Lean core only (fast, ~1 GB)
+#   docker compose up judge                       # pinned Mathlib (default; ~7-8 GB image)
+name: hatchery
+
+services:
+  postgres:
+    image: postgres:16.10-bookworm@sha256:38471f330eb885e04de130b768d6db4e10469e2311879c7e5c699f6d2d8a1c74
+    environment:
+      POSTGRES_USER: hatchery
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-hatchery-dev-only}
+      POSTGRES_DB: hatchery
+    ports:
+      - "127.0.0.1:${POSTGRES_PORT:-5433}:5432"
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U hatchery -d hatchery"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+
+  # Builds the sandbox image the judge starts for every check, then exits after printing its version.
+  lean-runner:
+    build:
+      context: .
+      dockerfile: apps/judge/runner/Dockerfile
+      args:
+        FLAVOR: ${JUDGE_FLAVOR:-full}
+    image: hatchery-lean-runner:${JUDGE_FLAVOR:-full}
+    command: ["version"]
+    network_mode: none
+    restart: "no"
+
+  judge:
+    build:
+      context: .
+      dockerfile: apps/judge/Dockerfile
+    image: hatchery-judge:dev
+    depends_on:
+      lean-runner:
+        condition: service_completed_successfully
+    environment:
+      JUDGE_IMAGE: hatchery-lean-runner:${JUDGE_FLAVOR:-full}
+      JUDGE_TIMEOUT_SECONDS: ${JUDGE_TIMEOUT_SECONDS:-300}
+      JUDGE_MEMORY_MB: ${JUDGE_MEMORY_MB:-8192}
+      JUDGE_CPUS: ${JUDGE_CPUS:-2}
+      JUDGE_CONCURRENCY: ${JUDGE_CONCURRENCY:-1}
+      JUDGE_API_TOKEN: ${JUDGE_API_TOKEN:-}
+    volumes:
+      # Needed to start sibling sandbox containers. Anything with this socket is root on the
+      # Docker host: the judge service only ever runs trusted code. See docs/judge.md.
+      - /var/run/docker.sock:/var/run/docker.sock
+    ports:
+      - "127.0.0.1:4100:4100"
+    healthcheck:
+      test: ["CMD", "node", "-e", "fetch('http://127.0.0.1:4100/health').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+volumes:
+  pgdata:

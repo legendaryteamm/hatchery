@@ -1,0 +1,7 @@
+**/node_modules
+lean/.lake
+.git
+.env
+.env.*
+docs
+design

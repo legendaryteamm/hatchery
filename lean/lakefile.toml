@@ -1,0 +1,25 @@
+# Pinned to Mathlib v4.36.0 (commit fc4f59e577feb1a4956671bc04ac18aaaf8cd842), toolchain leanprover/lean4:v4.36.0.
+name = "hatchery"
+defaultTargets = ["Defs", "Statements", "Proofs", "judgecheck"]
+
+[[require]]
+name = "mathlib"
+git = "https://github.com/leanprover-community/mathlib4.git"
+rev = "v4.36.0"
+
+[[lean_lib]]
+name = "Defs"
+globs = ["Defs.+"]
+
+[[lean_lib]]
+name = "Statements"
+globs = ["Statements.+"]
+
+[[lean_lib]]
+name = "Proofs"
+globs = ["Proofs.+"]
+
+[[lean_exe]]
+name = "judgecheck"
+root = "Judge.Main"
+supportInterpreter = true

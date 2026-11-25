@@ -1,0 +1,12 @@
+The Hatchery (working name)
+Copyright 2026 The Hatchery contributors
+
+This product is licensed under the Apache License, Version 2.0 (see LICENSE).
+
+Third-party components:
+- Lean 4 (https://github.com/leanprover/lean4), Apache License 2.0. Not vendored; installed in
+  the judge runner image.
+- Mathlib (https://github.com/leanprover-community/mathlib4), Apache License 2.0. Not vendored;
+  pinned in lean/lakefile.toml and downloaded into the "full" judge runner image.
+
+No files from brilliant-hq/pequalnp-proofs are included at this time (see docs/attribution.md).
