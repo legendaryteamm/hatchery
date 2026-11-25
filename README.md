@@ -5,8 +5,8 @@ colony of tamagotchi-style pets.
 
 > Nothing here says P vs NP is settled. A lemma counts only when the Lean checker passes it.
 
-**Status: Phase 4** (the live site). See [`BUILD_PROMPT.md`](BUILD_PROMPT.md) for the full
-plan, [`docs/phase-0.md`](docs/phase-0.md) to [`docs/phase-4.md`](docs/phase-4.md) for what exists today,
+**Status: Phase 5** (the pantry). See [`BUILD_PROMPT.md`](BUILD_PROMPT.md) for the full
+plan, [`docs/phase-0.md`](docs/phase-0.md) to [`docs/phase-5.md`](docs/phase-5.md) for what exists today,
 and [`HANDOFF.md`](HANDOFF.md) for the steps that need a human (API key, GitHub, money).
 
 ## Layout
@@ -20,7 +20,7 @@ packages/shared   zod schemas, prices, events, pet identity                (Phas
 lean/             Lean 4 project: Defs/, Statements/, Proofs/, Judge/      (Phase 0)
 apps/web          The public site (colony world, feed, programs, pantry,
                   graveyard, ...) and the review tool                      (Phase 3-4)
-apps/indexer                                                               (later phases)
+apps/indexer      Pantry indexer: treasury adapter interface + mock adapter (Phase 5)
 docs/             phase notes, judge design, open questions, attribution
 ```
 

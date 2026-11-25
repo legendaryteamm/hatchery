@@ -20,6 +20,7 @@
   },
   "devDependencies": {
     "@hatchery/desk": "workspace:*",
+    "@hatchery/indexer": "workspace:*",
     "@hatchery/judge": "workspace:*",
     "@types/node": "20.17.10",
     "drizzle-orm": "0.45.4",

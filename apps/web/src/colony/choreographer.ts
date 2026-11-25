@@ -212,6 +212,11 @@ export class Choreographer {
     if (e.id <= this.lastEventId) return;
     this.lastEventId = e.id;
     if (e.type === "pantry_inflow") return this.onInflow(e);
+    // The desk's low-food alert (same rule as the snapshot's `hungry`): every pet shows "!" until it clears.
+    if (e.type === "pantry_low" || e.type === "pantry_ok") {
+      this.pantry = { ...this.pantry, hungry: e.type === "pantry_low" };
+      return this.log("*", e.type === "pantry_low" ? "hungry" : "fed", e.id);
+    }
     if (e.type === "checked" && e.lemmaId) {
       const prog = this.programs.get(this.programOfLemma(e.lemmaId) ?? "");
       if (prog) prog.checked++;

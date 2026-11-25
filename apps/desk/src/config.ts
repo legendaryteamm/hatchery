@@ -68,6 +68,17 @@ const Env = z.object({
   MAX_STREAMS_PER_CLIENT: z.coerce.number().int().positive().default(4),
   /** Behind a reverse proxy (Phase 7), trust X-Forwarded-For for the client address. */
   TRUST_PROXY: flag,
+
+  // ---- Phase 5: pantry (treasury)
+  /** The chain whose inflows this desk records. "mock" = development; the site labels it. */
+  TREASURY_CHAIN: z.string().regex(/^[a-z0-9-]{1,32}$/).default("mock"),
+  /** The public treasury address (shown on the site). Empty with the mock chain. */
+  TREASURY_ADDRESS: z.string().max(200).default(""),
+  /** Bearer token for the indexer's routes (/internal/pantry/*). Separate from the worker token, so a worker can never record money. */
+  INDEXER_TOKEN: z.string().min(16).optional(),
+  /** Optional webhook for pantry alerts (Slack- and Discord-compatible JSON). Alerts are always logged and shown in the feed. */
+  ALERT_WEBHOOK_URL: z.string().url().optional(),
+  PANTRY_ALERT_CHECK_SECONDS: z.coerce.number().int().positive().default(60),
 }).superRefine((c, ctx) => {
   if ((c.PROOF_COMMIT_MODE === "commit" || c.PROOF_COMMIT_MODE === "write") && !c.HATCHERY_REAL_RUN) {
     ctx.addIssue({

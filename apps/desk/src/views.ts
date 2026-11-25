@@ -4,7 +4,7 @@
  */
 import { and, desc, eq, inArray, lt, sql } from "drizzle-orm";
 import { FEED_EVENT_TYPES, HEARTBEAT_ACTIVE_MS, HUNGRY_RUNWAY_DAYS, levelFor, petIdentity } from "@hatchery/shared";
-import { agents, attempts, events, lemmas, messages, pantryInflows, programs, statements } from "./db/schema.ts";
+import { agents, attempts, events, lemmas, messages, pantryInflows, pantryOutflows, programs, statements } from "./db/schema.ts";
 import type { Desk } from "./service.ts";
 
 export interface PantrySummary {
@@ -22,17 +22,23 @@ export interface PantrySummary {
   spentTodayUsd: string;
   killSwitch: boolean;
   recentInflows: { ts: string; chain: string; amountUsd: string; txHash: string; usdRateSource: string }[];
+  /** Top-ups (wallet to API billing) and other outflows, recorded by people. */
+  topupsUsd: string;
+  recentOutflows: { id: number; ts: string; kind: string; amountUsd: string; reference: string; note: string }[];
+  /** The treasury this desk tracks ("mock" = development money, labelled on the site). */
+  treasury: { chain: string; address: string; mock: boolean };
 }
 
 export async function pantrySummary(desk: Desk): Promise<PantrySummary> {
   const now = desk.now();
   const b = await desk.budget(null);
   const weekAgo = new Date(now.getTime() - 7 * 86_400_000).toISOString();
-  const [t] = await desk.db.execute<{ inflows: string; api: string; other: string; week: string; first: string | null }>(sql`
+  const [t] = await desk.db.execute<{ inflows: string; api: string; other: string; topups: string; week: string; first: string | null }>(sql`
     select
       (select coalesce(sum(amount_usd), 0) from pantry_inflows)::numeric(14,6)::text as inflows,
       (select coalesce(sum(cost_usd), 0) from model_calls)::numeric(14,6)::text as api,
       (select coalesce(sum(amount_usd), 0) from pantry_outflows where kind = 'other')::numeric(14,6)::text as other,
+      (select coalesce(sum(amount_usd), 0) from pantry_outflows where kind = 'topup_transfer')::numeric(14,6)::text as topups,
       (select coalesce(sum(cost_usd), 0) from model_calls where ts >= ${weekAgo}::timestamptz)::numeric(14,6)::text as week,
       (select min(ts)::text from model_calls where ts >= ${weekAgo}::timestamptz) as first`);
   // Average over the days actually covered (at most 7), so a young colony is not under-counted.
@@ -41,6 +47,7 @@ export async function pantrySummary(desk: Desk): Promise<PantrySummary> {
   const pantry = Number(b.pantryUsd);
   const runway = daily > 0 ? Math.max(0, pantry / daily) : null;
   const recent = await desk.db.select().from(pantryInflows).orderBy(desc(pantryInflows.ts)).limit(20);
+  const outs = await desk.db.select().from(pantryOutflows).orderBy(desc(pantryOutflows.ts)).limit(20);
   return {
     pantryUsd: b.pantryUsd,
     inflowsUsd: t!.inflows,
@@ -48,12 +55,16 @@ export async function pantrySummary(desk: Desk): Promise<PantrySummary> {
     otherOutflowsUsd: t!.other,
     dailySpendUsd: daily > 0 ? daily.toFixed(6) : null,
     runwayDays: runway === null ? null : Math.round(runway * 10) / 10,
-    hungry: runway !== null && runway < HUNGRY_RUNWAY_DAYS,
+    // Hungry: under HUNGRY_RUNWAY_DAYS of food at the current pace, or nothing left at all.
+    hungry: pantry <= 0 || (runway !== null && runway < HUNGRY_RUNWAY_DAYS),
     globalCapUsd: b.globalCapUsd,
     perAgentCapUsd: b.perAgentCapUsd,
     spentTodayUsd: b.globalSpentUsd,
     killSwitch: b.killSwitch.on,
     recentInflows: recent.map((r) => ({ ts: r.ts.toISOString(), chain: r.chain, amountUsd: r.amountUsd, txHash: r.txHash, usdRateSource: r.usdRateSource })),
+    topupsUsd: t!.topups,
+    recentOutflows: outs.map((o) => ({ id: o.id, ts: o.ts.toISOString(), kind: o.kind, amountUsd: o.amountUsd, reference: o.reference, note: o.note })),
+    treasury: { chain: desk.config.TREASURY_CHAIN, address: desk.config.TREASURY_ADDRESS, mock: desk.config.TREASURY_CHAIN === "mock" },
   };
 }
 

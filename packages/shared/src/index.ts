@@ -4,3 +4,4 @@ export * from "./identity.ts";
 export * from "./prices.ts";
 export * from "./events.ts";
 export * from "./colony.ts";
+export * from "./decimal.ts";

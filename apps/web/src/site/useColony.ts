@@ -25,6 +25,8 @@ export function useColony(onFrame?: (c: Choreographer, frame: number) => void) {
   const [error, setError] = useState<string | null>(null);
   const [feed, setFeed] = useState<FeedLike[]>([]);
   const [frame, setFrame] = useState(0);
+  /** Bumped on every pantry event, so pantry panels reload at once instead of at their next poll. */
+  const [pantryVersion, setPantryVersion] = useState(0);
   const chor = useRef<Choreographer | null>(null);
   const frameCb = useRef(onFrame);
   frameCb.current = onFrame;
@@ -34,6 +36,16 @@ export function useColony(onFrame?: (c: Choreographer, frame: number) => void) {
     let es: EventSource | null = null;
     let loop: ReturnType<typeof setInterval> | undefined;
     let refresh: ReturnType<typeof setInterval> | undefined;
+    let soon: ReturnType<typeof setTimeout> | undefined;
+    const reload = async () => {
+      try {
+        const s = await api.get<ColonyData>("/colony");
+        chor.current?.refresh(s);
+        if (alive) setData(s);
+      } catch {
+        /* keep the last data; the next refresh retries */
+      }
+    };
     (async () => {
       try {
         const snap = await api.get<ColonyData>("/colony");
@@ -47,6 +59,11 @@ export function useColony(onFrame?: (c: Choreographer, frame: number) => void) {
           const e = JSON.parse(m.data) as RawEvent & { ts: string };
           chor.current?.apply(e);
           setFeed((f) => (f.some((x) => x.id === e.id) ? f : [{ ...e, agentName: null, message: null }, ...f].slice(0, 80)));
+          if (e.type.startsWith("pantry_")) {
+            setPantryVersion((v) => v + 1);
+            if (soon) clearTimeout(soon);
+            soon = setTimeout(reload, 500); // bowl level, runway and food bars
+          }
         };
         let n = 0;
         loop = setInterval(() => {
@@ -57,15 +74,7 @@ export function useColony(onFrame?: (c: Choreographer, frame: number) => void) {
           frameCb.current?.(c, n);
           setFrame(n);
         }, FRAME_MS);
-        refresh = setInterval(async () => {
-          try {
-            const s = await api.get<ColonyData>("/colony");
-            chor.current?.refresh(s);
-            if (alive) setData(s);
-          } catch {
-            /* keep the last data; the next refresh retries */
-          }
-        }, 30_000);
+        refresh = setInterval(reload, 30_000);
       } catch (e) {
         if (alive) setError(e instanceof Error ? e.message : String(e));
       }
@@ -75,8 +84,9 @@ export function useColony(onFrame?: (c: Choreographer, frame: number) => void) {
       es?.close();
       if (loop) clearInterval(loop);
       if (refresh) clearInterval(refresh);
+      if (soon) clearTimeout(soon);
     };
   }, []);
 
-  return { data, error, feed, frame, chor: chor.current };
+  return { data, error, feed, frame, chor: chor.current, pantryVersion };
 }

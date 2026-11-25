@@ -3,6 +3,7 @@ import { connect, runMigrations } from "./db/client.ts";
 import { HttpJudgeClient } from "./judge-client.ts";
 import { LeanRepo } from "./lean-repo.ts";
 import { Review } from "./review.ts";
+import { PantryAlerts } from "./pantry.ts";
 import { buildServer } from "./server.ts";
 import { Desk } from "./service.ts";
 
@@ -37,5 +38,11 @@ setInterval(recheck, config.RECHECK_INTERVAL_SECONDS * 1000);
 const checks = () => review.runPendingChecks().then((d) => d.length && app.log.info({ checked: d }, "statement checks")).catch((err) => app.log.error(err, "statement checks"));
 void checks();
 setInterval(checks, 60_000);
+
+// Pantry alerts (log + feed event + optional webhook) when food runs low, and when it recovers.
+const alerts = new PantryAlerts(desk, app.log);
+const alertCheck = () => alerts.check().catch((err) => app.log.error(err, "pantry alerts"));
+void alertCheck();
+setInterval(alertCheck, config.PANTRY_ALERT_CHECK_SECONDS * 1000);
 
 await app.listen({ host: config.HOST, port: config.PORT });

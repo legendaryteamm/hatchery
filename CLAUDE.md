@@ -7,7 +7,9 @@ Steps only a human can do go in `HANDOFF.md`; pending decisions go in `docs/open
 ## This machine
 - **Never build the Mathlib (full) judge image here**: the disk is nearly full. Use the lite runner
   (`pnpm runner:build:lite`); Mathlib is compiled only by CI and the VPS (docs/deploy.md).
-- Run pnpm as `npx -y pnpm@9.15.9 …`: the local corepack fails on an outdated signing key.
+- Node 20.19.5 comes from fnm (`~/.zshrc`, reads `.nvmrc`), and pnpm 9.15.9 from that Node's corepack.
+  In a non-interactive shell that skips `~/.zshrc`, run `eval "$(fnm env --shell zsh)"` first. Avoid
+  `/usr/local/bin/node` (22.x): its corepack has an outdated signing key.
 - The project's Postgres listens on **5433**. Port 5432 and the `sentient-*` containers belong to
   another project: leave them alone.
 - The Mac idle-sleeps on battery and freezes long runs mid-way: wrap long test loops in `caffeinate -i`.

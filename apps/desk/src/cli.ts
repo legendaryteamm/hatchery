@@ -6,6 +6,9 @@
  *   export-proofs    write every checked proof to lean/Proofs/<L>.lean (pinned sources)
  *   report           print lemma statuses, attempts and spend
  *   pantry-mock-inflow <usd>   DEV ONLY: add a mock inflow (chain "mock") so agents have food
+ *   pantry-outflow topup_transfer|other <usd> "<reference>" ["<note>"]
+ *                              record money leaving the treasury (public ledger)
+ *   pantry-ledger              print the public ledger as CSV
  *   kill-switch on|off         flip the shared kill switch
  *   reviewer add "<name>" advisor|maintainer    create a reviewer; prints a one-time invite link
  *   reviewer invite <id>       new invite link (old one stops working)
@@ -108,13 +111,22 @@ try {
       usdRateSource: "mock adapter (1 native = 1 USD); development only", ts: new Date(),
     });
     console.log(await desk.budget(null));
+  } else if (cmd === "pantry-outflow") {
+    const [kind, amount, reference, note] = process.argv.slice(3);
+    if ((kind !== "topup_transfer" && kind !== "other") || !amount || !/^\d{1,12}(\.\d{1,6})?$/.test(amount) || !reference) {
+      throw new Error('usage: desk pantry-outflow topup_transfer|other <usd> "<reference: tx hash / invoice id>" ["<note>"]');
+    }
+    console.log(await desk.recordOutflow({ kind, amountUsd: amount, reference, note: note ?? "", by: `cli:${process.env.USER ?? "unknown"}` }));
+  } else if (cmd === "pantry-ledger") {
+    const { ledger, ledgerCsv } = await import("./pantry.ts");
+    process.stdout.write(ledgerCsv((await ledger(desk)).rows));
   } else if (cmd === "kill-switch") {
     const on = process.argv[3];
     if (on !== "on" && on !== "off") throw new Error("usage: desk kill-switch on|off");
     await desk.setKillSwitch(on === "on", `cli:${process.env.USER ?? "unknown"}`);
     console.log((await desk.budget(null)).killSwitch);
   } else {
-    console.error("usage: desk migrate | sync | recheck | export-proofs | report | pantry-mock-inflow <usd> | kill-switch on|off");
+    console.error("usage: desk migrate | sync | recheck | export-proofs | report | pantry-mock-inflow <usd> | pantry-outflow ... | pantry-ledger | kill-switch on|off | reviewer ...");
     process.exitCode = 2;
   }
 } finally {

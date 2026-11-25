@@ -45,4 +45,7 @@ export const FEED_EVENT_TYPES = [
   "definition_reviewed",
   "split_requested",
   "pantry_inflow",
+  "pantry_outflow",
+  "pantry_low",
+  "pantry_ok",
 ] as const;

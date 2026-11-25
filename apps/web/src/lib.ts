@@ -1,8 +1,8 @@
 import { useEffect, useState } from "react";
 import { api } from "./api";
 
-/** GET a desk endpoint; refetch when `deps` change or every `refreshMs`. */
-export function useApi<T>(path: string | null, refreshMs = 0): { data: T | null; error: string | null } {
+/** GET a desk endpoint; refetch when `path` or `reloadKey` change, or every `refreshMs`. */
+export function useApi<T>(path: string | null, refreshMs = 0, reloadKey: unknown = 0): { data: T | null; error: string | null } {
   const [data, setData] = useState<T | null>(null);
   const [error, setError] = useState<string | null>(null);
   useEffect(() => {
@@ -15,7 +15,7 @@ export function useApi<T>(path: string | null, refreshMs = 0): { data: T | null;
       alive = false;
       if (t) clearInterval(t);
     };
-  }, [path, refreshMs]);
+  }, [path, refreshMs, reloadKey]);
   return { data, error };
 }
 

@@ -37,5 +37,18 @@ The items below need a person: credentials, money, or an outside service.
 - [ ] **Delete the pre-rewrite backup refs** once you are happy with the new commit identity (they still
       hold the old email): `git update-ref -d refs/backup/pre-identity-rewrite && git update-ref -d refs/original/refs/heads/main`,
       then `git reflog expire --expire=now --all && git gc --prune=now`.
+- [ ] **Real treasury adapter** (TODO; nothing is connected to a chain). The pantry runs on the mock
+      adapter until a maintainer decides:
+      1. which chain and which asset the fees arrive in, and the treasury's public address
+         (the wallet itself and its keys stay with people, never in this repo or on the server);
+      2. how many confirmations count as final on that chain;
+      3. the USD price source (e.g. a named exchange API or an on-chain oracle) and how often to read it.
+      Then a developer implements `TreasuryAdapter` and `PriceSource` (`apps/indexer/src/adapter.ts`),
+      registers them in `apps/indexer/src/adapters.ts`, adds tests like `apps/indexer/test/indexer.test.ts`
+      against recorded chain responses, and sets `TREASURY_CHAIN`, `TREASURY_ADDRESS`, `PRICE_SOURCE`
+      on the server. The desk refuses inflows from any other chain, so mock money cannot leak in.
+- [ ] **Record every top-up** (money moved from the treasury wallet to API billing) with its tx hash and
+      invoice id: `pnpm desk pantry-outflow topup_transfer <usd> "tx <hash> / invoice <id>"` (or the admin page,
+      Phase 6). Once a month, compare the ledger's API spend with the provider's invoices.
 - [ ] Out of scope for Claude Code, as always (BUILD_PROMPT.md section 13): the token, wallets, fee routing,
       legal review, paying API bills, marketing.

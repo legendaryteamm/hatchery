@@ -34,3 +34,6 @@ Questions for the maintainer. Each has the default chosen for now.
 | 28 | The core warm-up lemmas get a small "warm-up bench" under the judge, since they are not one of the four research camps. Keep it, or hide warm-up agents once research lemmas exist? | Keep the bench. | 4 |
 | 29 | On a checked proof, only the 4 nearest free teammates run over to cheer (all of a big camp would pile up at the judge). | 4 nearest. | 4 |
 | 30 | The pantry bowl's fill = runway / 30 days (full when nothing has been spent yet, empty at $0). | As stated. | 4 |
+| 31 | Which chain, asset, confirmation depth and USD price source should the real treasury adapter use? | Not built: the mock adapter only, with a clean interface (maintainer asked not to be asked now). See HANDOFF.md. | 5 |
+| 32 | The low-food alert also fires when the pantry is empty, even with no recent spend (no pace to measure). | Yes: "empty" counts as low. | 5 |
+| 33 | API spend appears in the ledger as one row per UTC day and model (not one row per call). Per-call detail stays in the database. | Per day and model. | 5 |

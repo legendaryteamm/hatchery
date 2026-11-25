@@ -148,6 +148,17 @@ describe("every row of the table, triggered only by its event", () => {
     expect(c.look(pet("a"))).toBe("hungry");
   });
 
+  it("hungry '!' also follows the desk's low-food alert events at once, and clears with pantry_ok", () => {
+    const { c, ev, pet } = world([agent("a")]);
+    expect(c.look(pet("a"))).not.toBe("hungry");
+    const low = ev("pantry_low", null, null, { pantryUsd: "1.000000", runwayDays: 1.2 });
+    expect(c.look(pet("a"))).toBe("hungry");
+    expect(c.trace.find((t) => t.what === "hungry")).toMatchObject({ cause: low.id });
+    ev("pantry_ok", null, null, {});
+    expect(c.look(pet("a"))).not.toBe("hungry");
+    expect(pet("a").act).toBe("idle"); // a mood, not a move
+  });
+
   it("new inflow above the threshold: pets run to the pantry bowl (smaller ones: nothing)", () => {
     const { c, ev, run, pet } = world([agent("a"), agent("b", { sleeping: true, sleepReason: "agent_cap" })]);
     ev("pantry_inflow", null, null, { amountUsd: "5.000000" });

@@ -22,6 +22,8 @@ const reasonText: Record<string, string> = {
   kill_switch: "the colony is paused",
 };
 
+const money = (v: unknown) => Number(v).toLocaleString("en-US", { style: "currency", currency: "USD" });
+
 export function feedText(e: FeedLike): { text: string; kind: string } | null {
   const who = e.agentName ?? (e.agentId ? petIdentity(e.agentId).displayName : "Someone");
   const name = (id: unknown) => (typeof id === "string" ? petIdentity(id).displayName : "a teammate");
@@ -54,6 +56,11 @@ export function feedText(e: FeedLike): { text: string; kind: string } | null {
     case "definition_reviewed": return { kind: "info", text: `A ${String(p.role ?? "reviewer")} ${p.decision === "approve" ? "approved" : p.decision === "request_changes" ? "requested changes to" : "commented on"} the definition ${String(p.definition)}.` };
     case "split_requested": return { kind: "info", text: `${who} asked the decomposer to split ${L} into smaller steps.` };
     case "pantry_inflow": return { kind: "money", text: `${Number(p.amountUsd).toLocaleString("en-US", { style: "currency", currency: "USD" })} came into the pantry${p.chain === "mock" ? " (mock inflow, development only)" : ""}.` };
+    case "pantry_outflow": return p.kind === "topup_transfer"
+      ? { kind: "money", text: `${money(p.amountUsd)} moved from the treasury wallet to API billing (${String(p.reference)}). The pantry total does not change.` }
+      : { kind: "money", text: `${money(p.amountUsd)} left the pantry${p.note ? `: ${String(p.note)}` : ""} (${String(p.reference)}).` };
+    case "pantry_low": return { kind: "rejected", text: Number(p.pantryUsd) <= 0 ? "The pantry is empty: the provers cannot eat until money comes in." : `The pantry is low: about ${String(p.runwayDays)} days of food left at the current pace.` };
+    case "pantry_ok": return { kind: "money", text: "The pantry has enough food again." };
     default: return null;
   }
 }

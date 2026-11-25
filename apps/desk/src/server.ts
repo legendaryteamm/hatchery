@@ -12,6 +12,7 @@ import { LemmaIdSchema, MAX_PROOF_BYTES, MESSAGE_LIMITS, SLEEP_REASONS } from "@
 import { agents, attempts, events, leases, lemmas, messages, programs, statements } from "./db/schema.ts";
 import { Review, type Reviewer } from "./review.ts";
 import { Desk, DeskError } from "./service.ts";
+import { ledger, ledgerCsv } from "./pantry.ts";
 import { agentCard, colonySnapshot, feed, graveyard, pantrySummary } from "./views.ts";
 
 const AgentId = z.string().regex(/^[a-z0-9][a-z0-9-]{1,62}$/, "agent ids: lowercase letters, digits, hyphens");
@@ -80,6 +81,27 @@ const Schemas = {
     splitRequestId: z.number().int().positive().optional(),
   }),
   join: z.object({ token: z.string().min(20).max(200) }),
+  inflows: z.object({
+    chain: z.string().regex(/^[a-z0-9-]{1,32}$/),
+    cursor: z.string().max(200).nullable(),
+    inflows: z
+      .array(
+        z.object({
+          txHash: z.string().regex(/^[A-Za-z0-9:_-]{1,200}$/),
+          amountNative: z.string().regex(/^\d{1,30}(\.\d{1,18})?$/),
+          amountUsd: z.string().regex(/^\d{1,12}(\.\d{1,6})?$/),
+          usdRateSource: z.string().min(1).max(300),
+          ts: z.string().datetime(),
+        }),
+      )
+      .max(500),
+  }),
+  outflow: z.object({
+    kind: z.enum(["topup_transfer", "other"]),
+    amountUsd: z.string().regex(/^\d{1,12}(\.\d{1,6})?$/),
+    reference: z.string().min(1).max(300),
+    note: z.string().max(500).default(""),
+  }),
   decision: z.object({
     decision: z.enum(["approve", "request_changes", "reject", "comment"]),
     comment: z.string().max(5000).default(""),
@@ -146,6 +168,13 @@ export function buildServer(desk: Desk, review: Review = new Review(desk, desk.j
     async (req: FastifyRequest, reply: FastifyReply) => {
       if (!desk.config.ADMIN_TOKEN) return reply.code(404).send({ error: "admin routes are disabled (set ADMIN_TOKEN)" });
       if (!tokenOk(req.headers.authorization, desk.config.ADMIN_TOKEN)) return reply.code(401).send({ error: "unauthorized" });
+      return fn(req, reply);
+    };
+  /** The pantry indexer: its own token, so a worker can never record money. */
+  const indexer = (fn: (req: FastifyRequest, reply: FastifyReply) => Promise<unknown>) =>
+    async (req: FastifyRequest, reply: FastifyReply) => {
+      if (!desk.config.INDEXER_TOKEN) return reply.code(404).send({ error: "indexer routes are disabled (set INDEXER_TOKEN)" });
+      if (!tokenOk(req.headers.authorization, desk.config.INDEXER_TOKEN)) return reply.code(401).send({ error: "unauthorized" });
       return fn(req, reply);
     };
   const idParam = (req: FastifyRequest) => z.coerce.number().int().positive().parse((req.params as { id: string }).id);
@@ -245,6 +274,16 @@ export function buildServer(desk: Desk, review: Review = new Review(desk, desk.j
   }));
   app.get("/internal/checked", internal(async (req) => desk.searchChecked(Schemas.checked.parse(req.query).q)));
 
+  // ---------------------------------------------------------------- internal: pantry indexer (Phase 5)
+  app.get("/internal/pantry/cursor", indexer(async (req) => {
+    const { chain } = z.object({ chain: z.string().regex(/^[a-z0-9-]{1,32}$/) }).parse(req.query);
+    return { chain, cursor: await desk.indexerCursor(chain) };
+  }));
+  app.post("/internal/pantry/inflows", indexer(async (req) => {
+    const b = Schemas.inflows.parse(req.body);
+    return desk.recordInflows(b.chain, b.inflows.map((i) => ({ ...i, ts: new Date(i.ts) })), b.cursor);
+  }));
+
   // ---------------------------------------------------------------- internal: decomposer and splits
   app.get("/internal/decomposer/context", internal(async (req) => {
     const q = z.object({ agentId: AgentId, program: z.string().max(64).optional() }).parse(req.query);
@@ -312,6 +351,11 @@ export function buildServer(desk: Desk, review: Review = new Review(desk, desk.j
     const b = Schemas.killSwitch.parse(req.body);
     await desk.setKillSwitch(b.on, b.by);
     return (await desk.budget(null)).killSwitch;
+  }));
+  /** Record money leaving the treasury (a top-up of API billing, or anything else), for the public ledger. */
+  app.post("/admin/pantry/outflows", admin(async (req) => {
+    const b = Schemas.outflow.parse(req.body);
+    return desk.recordOutflow({ ...b, by: "admin-token" });
   }));
 
   // ---------------------------------------------------------------- public, read-only
@@ -384,6 +428,18 @@ export function buildServer(desk: Desk, review: Review = new Review(desk, desk.j
   });
   app.get("/graveyard", async () => graveyard(desk));
   app.get("/pantry", async () => pantrySummary(desk));
+  /** The public ledger: every inflow, API spend per day and model, every outflow, with a running balance. */
+  app.get("/pantry/ledger", async (req) => {
+    const q = z.object({ limit: z.coerce.number().int().min(1).max(1000).default(200) }).parse(req.query);
+    const l = await ledger(desk);
+    return { totals: l.totals, count: l.rows.length, rows: l.rows.slice(-q.limit).reverse() };
+  });
+  app.get("/pantry/ledger.csv", async (_req, reply) => {
+    const l = await ledger(desk);
+    reply.header("content-type", "text/csv; charset=utf-8");
+    reply.header("content-disposition", `attachment; filename="hatchery-pantry-ledger-${desk.now().toISOString().slice(0, 10)}.csv"`);
+    return ledgerCsv(l.rows);
+  });
 
   /** Definitions, with their review state: the site must show drafts as drafts. */
   app.get("/definitions", async () => review.definitionList());

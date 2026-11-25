@@ -298,6 +298,8 @@ export const pantryOutflows = pgTable("pantry_outflows", {
   amountUsd: usd("amount_usd").notNull(),
   reference: text("reference").notNull(),
   ts: ts("ts").notNull().defaultNow(),
+  note: text("note").notNull().default(""), // ext (Phase 5)
+  recordedBy: text("recorded_by").notNull().default(""), // ext (Phase 5): who recorded it (admin login / cli user)
 });
 
 export const budgetDays = pgTable("budget_days", {

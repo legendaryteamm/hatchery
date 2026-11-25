@@ -227,3 +227,6 @@ blockquote { margin: 4px 0 0 0; padding-left: 12px; border-left: 3px solid var(-
   .feed li { grid-template-columns: 3.2em 10px 1fr; gap: 8px; }
 }
 @media (prefers-reduced-motion: reduce) { * { transition: none !important; animation: none !important; } }
+
+/* Long addresses and hashes wrap instead of widening the page on phones. */
+.wrapcode { word-break: break-all; }

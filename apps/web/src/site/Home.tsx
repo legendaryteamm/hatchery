@@ -7,11 +7,14 @@ import { PetCard } from "./PetCard";
 import { type ColonyData, useColony } from "./useColony";
 import { World } from "./World";
 
-interface Pantry { pantryUsd: string; inflowsUsd: string; apiSpendUsd: string; runwayDays: number | null; perAgentCapUsd: string; killSwitch: boolean }
+export interface Pantry {
+  pantryUsd: string; inflowsUsd: string; apiSpendUsd: string; runwayDays: number | null; perAgentCapUsd: string; killSwitch: boolean;
+  treasury?: { chain: string; address: string; mock: boolean };
+}
 
 export function Home() {
-  const { data, error, feed, frame, chor } = useColony();
-  const pantry = useApi<Pantry>("/pantry", 30_000).data;
+  const { data, error, feed, frame, chor, pantryVersion } = useColony();
+  const pantry = useApi<Pantry>("/pantry", 30_000, pantryVersion).data;
   const [sel, setSel] = useState<string | null>(null);
   const programs = useMemo(() => new Map((data?.programs ?? []).map((p) => [p.slug, p.title])), [data]);
   if (error) return <div className="banner bad">The colony could not be loaded: {error}</div>;
@@ -121,6 +124,7 @@ export function PantryPanel({ pantry }: { pantry: Pantry | null }) {
           <div><dt>Food cap per prover today</dt><dd>{usd(pantry?.perAgentCapUsd)}</dd></div>
         </dl>
       </div>
+      {pantry?.treasury?.mock && <p className="note"><strong>Development pantry:</strong> these inflows are mock data, not real money.</p>}
       <p className="note">The money buys compute for the provers and nothing else. Every inflow and every API bill is listed on the Pantry page.</p>
     </div>
   );

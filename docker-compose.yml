@@ -1,6 +1,6 @@
 # Local development stack (Phase 3): postgres, Lean judge, desk; workers + decomposer are opt-in.
 # The review tool runs from source: `pnpm web:dev` (http://localhost:5173, proxies /api to the desk).
-# web and indexer are added in later phases (see BUILD_PROMPT.md section 3).
+# The pantry indexer is opt-in: `--profile mock-pantry` runs it with the mock chain (development only).
 #
 #   JUDGE_FLAVOR=lite docker compose up -d desk            # postgres + judge + desk (no model calls)
 #   JUDGE_FLAVOR=lite docker compose --profile agents up worker   # WORKER_COUNT agents: SPENDS API MONEY
@@ -90,6 +90,11 @@ services:
       PROOF_COMMIT_MODE: ${PROOF_COMMIT_MODE:-sandbox}
       HATCHERY_REAL_RUN: ${HATCHERY_REAL_RUN:-0}
       PUBLIC_SITE_URL: ${PUBLIC_SITE_URL:-http://localhost:5173}
+      # Pantry (Phase 5): the chain whose inflows count; mock money is refused on any other chain.
+      TREASURY_CHAIN: ${TREASURY_CHAIN:-mock}
+      TREASURY_ADDRESS: ${TREASURY_ADDRESS:-}
+      INDEXER_TOKEN: ${INDEXER_TOKEN:-}
+      ALERT_WEBHOOK_URL: ${ALERT_WEBHOOK_URL:-}
       # Server only (docs/deploy.md): push bot commits with a repo-scoped deploy key.
       PROOF_PUSH: ${PROOF_PUSH:-0}
       PROOF_PUSH_REMOTE: ${PROOF_PUSH_REMOTE:-origin}
@@ -146,5 +151,30 @@ services:
       KILL_SWITCH: ${KILL_SWITCH:-0}
     restart: "no"
 
+  # Opt-in: `--profile mock-pantry`. DEVELOPMENT ONLY: a pretend chain that receives money on a timer.
+  # A real chain needs an adapter first (HANDOFF.md, "Real treasury adapter").
+  indexer:
+    profiles: ["mock-pantry"]
+    build:
+      context: .
+      dockerfile: apps/indexer/Dockerfile
+    image: hatchery-indexer:dev
+    depends_on:
+      desk:
+        condition: service_started
+    environment:
+      DESK_URL: http://desk:4200
+      INDEXER_TOKEN: ${INDEXER_TOKEN:-}
+      TREASURY_CHAIN: ${TREASURY_CHAIN:-mock}
+      TREASURY_ADDRESS: ${TREASURY_ADDRESS:-}
+      INDEXER_POLL_SECONDS: ${INDEXER_POLL_SECONDS:-15}
+      MOCK_CHAIN_FILE: /data/mock-chain.json
+      MOCK_AUTO_INFLOW_SECONDS: ${MOCK_AUTO_INFLOW_SECONDS:-0}
+      MOCK_AUTO_INFLOW_NATIVE: ${MOCK_AUTO_INFLOW_NATIVE:-25}
+    volumes:
+      - mockchain:/data
+    restart: unless-stopped
+
 volumes:
   pgdata:
+  mockchain:

@@ -6,11 +6,14 @@
  *  - Agents use the scripted test model ("fake-model"), so the site shows its "Test run" banner.
  *    Every event on the site is a real record of this scripted run; nothing is drawn without one.
  *  - Judge stand-in: a proof passes when it carries the "-- PASS" marker (no Lean, no Docker).
+ *  - Pantry: a mock chain receives $50 every 45 s; the real indexer code picks it up and posts it to
+ *    the desk's indexer API, exactly as it would for a real chain.
  *
  * Env: MOCK_AGENTS (default 55), PORT (default 4200), MOCK_SEED.
  */
 import type { AddressInfo } from "node:net";
 import { buildServer, Desk, LeanRepo } from "@hatchery/desk";
+import { FixedPrice, HttpDeskPantryClient, Indexer, MockAdapter, MockChain } from "@hatchery/indexer";
 import { addInflow, FakeJudge, freshDb, REPO_LEAN_DIR, testConfig, WORKER_TOKEN } from "../../desk/test/helpers.ts";
 import { Agent } from "../src/agent.ts";
 import { DeskClient } from "../src/desk-client.ts";
@@ -31,6 +34,7 @@ const desk = new Desk(fresh.db, judge, repo, testConfig({
   AGENT_MAX_ATTEMPTS_PER_LEMMA: "6",
   RATE_LIMIT_PER_MINUTE: "100000",
   ACTIVE_AGENT_WINDOW_SECONDS: "120",
+  INDEXER_TOKEN: "mock-colony-indexer-token",
 }));
 await desk.syncStatements();
 await addInflow(fresh.db, 2_000);
@@ -55,7 +59,10 @@ const reopen = setInterval(async () => {
     (await import("drizzle-orm")).sql`update lemmas set status = 'open', checked_source = null, checked_fingerprint = null where status = 'checked' and random() < 0.3`,
   );
 }, 15_000);
-const inflow = setInterval(() => void desk.recordInflow({ txHash: `mock-${Date.now()}`, chain: "mock", amountNative: "50", amountUsd: "50.000000", usdRateSource: "mock adapter; development only", ts: new Date() }), 45_000);
+const mockChain = new MockChain(); // in memory: gone with the throwaway database
+const indexer = new Indexer(new MockAdapter(mockChain), new FixedPrice("1"), new HttpDeskPantryClient(`http://127.0.0.1:${PORT}`, "mock-colony-indexer-token"), "");
+const inflow = setInterval(() => mockChain.send("50"), 45_000);
+const indexing = setInterval(() => void indexer.tick().catch((e) => console.error(`indexer: ${e.message}`)), 5_000);
 
 let stopping = false;
 const runs = Array.from({ length: N }, (_, i) =>
@@ -72,6 +79,7 @@ const stop = async () => {
   stopping = true;
   clearInterval(reopen);
   clearInterval(inflow);
+  clearInterval(indexing);
   console.log("stopping agents and dropping the throwaway database…");
   await Promise.race([Promise.allSettled(runs), new Promise((r) => setTimeout(r, 15_000))]);
   await app.close();

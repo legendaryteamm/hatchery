@@ -5,9 +5,11 @@
 import { and, asc, desc, eq, gte, inArray, isNull, lt, sql } from "drizzle-orm";
 import {
   costMicroUsd,
+  formatMicros,
   lemmaIdToLeanName,
   MESSAGE_LIMITS,
   microsToUsd,
+  parseDecimal,
   petIdentity,
   priceTable,
   PRICES_AS_OF,
@@ -16,11 +18,12 @@ import {
   type ProofDep,
   type SleepReason,
   type TokenUsage,
+  usdToMicros,
 } from "@hatchery/shared";
 import { budgetStatus, type BudgetStatus } from "./budget.ts";
 import type { DeskConfig } from "./config.ts";
 import type { Db, Tx } from "./db/client.ts";
-import { agents, attempts, definitions, events, leases, lemmas, messages, modelCalls, pantryInflows, programs, reuses, settings, statements } from "./db/schema.ts";
+import { agents, attempts, definitions, events, leases, lemmas, messages, modelCalls, pantryInflows, pantryOutflows, programs, reuses, settings, statements } from "./db/schema.ts";
 import type { JudgeClient, JudgeInfo } from "./judge-client.ts";
 import { sha256, type LeanRepo } from "./lean-repo.ts";
 import { ProofCommitter } from "./proof-committer.ts";
@@ -81,6 +84,14 @@ export interface DefinitionState {
 }
 
 type DbOrTx = Db | Tx;
+
+export interface InflowInput {
+  txHash: string;
+  amountNative: string;
+  amountUsd: string;
+  usdRateSource: string;
+  ts: Date;
+}
 
 export async function emit(
   db: DbOrTx,
@@ -230,11 +241,71 @@ export class Desk {
     return true;
   }
 
-  /** Record money coming into the pantry (mock adapter now; the chain indexer in Phase 5). */
-  async recordInflow(i: { txHash: string; chain: string; amountNative: string; amountUsd: string; usdRateSource: string; ts: Date }): Promise<void> {
-    await this.db.transaction(async (tx) => {
-      await tx.insert(pantryInflows).values(i);
-      await emit(tx, "pantry_inflow", { payload: { chain: i.chain, amountUsd: i.amountUsd, txHash: i.txHash } });
+  /** Record one inflow (CLI and mock runs). The indexer uses recordInflows. */
+  async recordInflow(i: InflowInput & { chain: string }): Promise<void> {
+    await this.recordInflows(i.chain, [i], null);
+  }
+
+  /**
+   * Record money coming into the pantry, idempotently: a transfer already recorded (same chain and
+   * tx hash) is skipped. Only the configured TREASURY_CHAIN is accepted, so mock money can never
+   * land in a desk that tracks a real chain. The indexer's cursor is saved in the same transaction.
+   */
+  async recordInflows(chain: string, rows: InflowInput[], cursor: string | null): Promise<{ recorded: number; duplicates: number }> {
+    if (chain !== this.config.TREASURY_CHAIN) {
+      throw new DeskError(409, `this desk records inflows on "${this.config.TREASURY_CHAIN}" only (got "${chain}")`);
+    }
+    const latest = this.now().getTime() + 5 * 60_000;
+    for (const r of rows) {
+      if (r.ts.getTime() > latest) throw new DeskError(400, `inflow ${r.txHash} is dated in the future`);
+      if (usdToMicros(r.amountUsd) <= 0n || parseDecimal(r.amountNative, 18) <= 0n) throw new DeskError(400, `inflow ${r.txHash} must be positive`);
+    }
+    return this.db.transaction(async (tx) => {
+      let recorded = 0;
+      for (const r of rows) {
+        const amountUsd = formatMicros(usdToMicros(r.amountUsd));
+        const [row] = await tx
+          .insert(pantryInflows)
+          .values({ txHash: r.txHash, chain, amountNative: r.amountNative, amountUsd, usdRateSource: r.usdRateSource, ts: r.ts })
+          .onConflictDoNothing()
+          .returning();
+        if (!row) continue;
+        recorded++;
+        await emit(tx, "pantry_inflow", { payload: { chain, amountUsd, txHash: r.txHash } });
+      }
+      if (cursor !== null) {
+        const key = `indexer_cursor:${chain}`;
+        await tx
+          .insert(settings)
+          .values({ key, value: { cursor }, updatedBy: "indexer" })
+          .onConflictDoUpdate({ target: settings.key, set: { value: { cursor }, updatedAt: this.now(), updatedBy: "indexer" } });
+      }
+      return { recorded, duplicates: rows.length - recorded };
+    });
+  }
+
+  /** Where the indexer left off on `chain` (null = start from the beginning). */
+  async indexerCursor(chain: string): Promise<string | null> {
+    const [row] = await this.db.select().from(settings).where(eq(settings.key, `indexer_cursor:${chain}`));
+    return (row?.value as { cursor?: string } | undefined)?.cursor ?? null;
+  }
+
+  /**
+   * Money leaving the treasury, recorded by a person (admin page or CLI) so the public ledger stays
+   * complete. topup_transfer = wallet to API billing (the pantry total does not change);
+   * other = anything else (the pantry goes down). API spend is never entered by hand: it is the sum
+   * of the recorded model calls.
+   */
+  async recordOutflow(o: { kind: "topup_transfer" | "other"; amountUsd: string; reference: string; note: string; by: string; ts?: Date }) {
+    const micros = usdToMicros(o.amountUsd);
+    if (micros <= 0n) throw new DeskError(400, "amount must be positive");
+    return this.db.transaction(async (tx) => {
+      const [row] = await tx
+        .insert(pantryOutflows)
+        .values({ kind: o.kind, amountUsd: formatMicros(micros), reference: o.reference, note: o.note, recordedBy: o.by, ts: o.ts ?? this.now() })
+        .returning();
+      await emit(tx, "pantry_outflow", { payload: { id: row!.id, kind: o.kind, amountUsd: row!.amountUsd, reference: o.reference, note: o.note } });
+      return row!;
     });
   }
 

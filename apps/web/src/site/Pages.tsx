@@ -43,18 +43,30 @@ export function FeedPage() {
 
 // ------------------------------------------------------------------ Pantry
 interface PantryFull {
-  pantryUsd: string; inflowsUsd: string; apiSpendUsd: string; otherOutflowsUsd: string; dailySpendUsd: string | null; runwayDays: number | null;
+  pantryUsd: string; inflowsUsd: string; apiSpendUsd: string; otherOutflowsUsd: string; topupsUsd: string; dailySpendUsd: string | null; runwayDays: number | null;
   hungry: boolean; globalCapUsd: string; perAgentCapUsd: string; spentTodayUsd: string; killSwitch: boolean;
   recentInflows: { ts: string; chain: string; amountUsd: string; txHash: string; usdRateSource: string }[];
+  treasury: { chain: string; address: string; mock: boolean };
 }
+interface LedgerRow { ts: string; kind: string; description: string; reference: string; usdRateSource: string; amountUsd: string; pantryChangeUsd: string; balanceUsd: string }
+interface Ledger { count: number; rows: LedgerRow[]; totals: { inflowsUsd: string; apiSpendUsd: string; otherOutflowsUsd: string; topupsUsd: string; pantryUsd: string } }
+const KIND_LABEL: Record<string, string> = { inflow: "Money in", api_spend: "API calls", topup_transfer: "Top-up (no change)", other: "Money out" };
+const signed = (v: string) => (Number(v) > 0 ? `+${usd(v, 2)}` : Number(v) < 0 ? `−${usd(v.replace("-", ""), 2)}` : usd(0));
+
 export function PantryPage() {
   const { data: p, error } = useApi<PantryFull>("/pantry", 30_000);
+  const { data: l } = useApi<Ledger>("/pantry/ledger?limit=200", 30_000);
   if (error) return <div className="banner bad">{error}</div>;
   return (
     <section>
       <h1 className="page">The pantry</h1>
       <p className="sub">The pantry pays for the provers' model calls. Every number here comes from the project's database.</p>
-      {p?.hungry && <div className="banner draft"><strong>Low on food:</strong> less than 3 days left at the current pace.</div>}
+      {p?.treasury.mock && (
+        <div className="banner draft" role="status">
+          <strong>Development pantry.</strong> No real treasury is connected yet. The inflows below come from a mock adapter and are not real money.
+        </div>
+      )}
+      {p?.hungry && <div className="banner bad" role="status"><strong>Low on food:</strong> {Number(p.pantryUsd) <= 0 ? "the pantry is empty." : "less than 3 days left at the current pace."}</div>}
       <div className="split">
         <PantryPanel pantry={p} />
         <div className="panel">
@@ -63,6 +75,7 @@ export function PantryPage() {
             <div><dt>Colony budget today</dt><dd>{usd(p?.globalCapUsd)}</dd></div>
             <div><dt>Spent today</dt><dd>{usd(p?.spentTodayUsd, 4)}</dd></div>
             <div><dt>Average spend per day (last 7 days)</dt><dd>{p?.dailySpendUsd ? usd(p.dailySpendUsd, 4) : "—"}</dd></div>
+            <div><dt>Moved to API billing (top-ups)</dt><dd>{usd(p?.topupsUsd)}</dd></div>
             <div><dt>Other outflows</dt><dd>{usd(p?.otherOutflowsUsd)}</dd></div>
             <div><dt>Kill switch</dt><dd>{p ? (p.killSwitch ? "on (paused)" : "off") : "—"}</dd></div>
           </dl>
@@ -71,26 +84,39 @@ export function PantryPage() {
           </p>
         </div>
       </div>
-      <h2>Money in</h2>
-      {p && p.recentInflows.length === 0 && <p className="muted">No inflows yet.</p>}
-      {p && p.recentInflows.length > 0 && (
+
+      <h2>Treasury</h2>
+      <p>
+        {p?.treasury.mock
+          ? "Not connected to a blockchain yet. When it is, its public address will be shown here, and every transfer into it will appear in the ledger with the price source used to convert it to dollars."
+          : <>Chain: <strong>{p?.treasury.chain}</strong>. Address: <code className="wrapcode">{p?.treasury.address || "—"}</code>. Every transfer into this address is listed below.</>}
+      </p>
+
+      <div className="row"><h2>Ledger</h2><a className="small" href="/api/pantry/ledger.csv" download>Download the full ledger (CSV)</a></div>
+      <p className="muted small">
+        Pantry = money in − API calls − other money out. A top-up moves money from the treasury wallet to API billing: it is listed, but the pantry does not change.
+        API calls are summed per day and model from every recorded call. The last balance equals the pantry above, to the cent.
+      </p>
+      {l && l.count === 0 && <p className="muted">Nothing in the ledger yet.</p>}
+      {l && l.count > 0 && (
         <div className="tablewrap">
           <table className="data">
-            <thead><tr><th>When</th><th>Source</th><th className="num">USD</th><th>Reference</th></tr></thead>
+            <thead><tr><th>When (UTC)</th><th>What</th><th>Details</th><th className="num">Change</th><th className="num">Balance</th></tr></thead>
             <tbody>
-              {p.recentInflows.map((i) => (
-                <tr key={i.txHash}>
-                  <td>{dayTime(i.ts)}</td>
-                  <td>{i.chain === "mock" ? "mock inflow (development only)" : i.chain}</td>
-                  <td className="num">{usd(i.amountUsd)}</td>
-                  <td className="small muted">{i.txHash}<br />{i.usdRateSource}</td>
+              {l.rows.map((r) => (
+                <tr key={`${r.kind}-${r.reference}-${r.ts}`}>
+                  <td>{r.ts.slice(0, 16).replace("T", " ")}</td>
+                  <td>{KIND_LABEL[r.kind] ?? r.kind}</td>
+                  <td className="small">{r.description}<br /><span className="muted">{r.reference}{r.usdRateSource ? ` · ${r.usdRateSource}` : ""}</span></td>
+                  <td className="num">{r.kind === "topup_transfer" ? <span className="muted">{usd(r.amountUsd)} moved</span> : signed(r.pantryChangeUsd)}</td>
+                  <td className="num">{usd(r.balanceUsd)}</td>
                 </tr>
               ))}
             </tbody>
           </table>
+          {l.count > l.rows.length && <p className="muted small">Showing the latest {l.rows.length} of {l.count} rows. The CSV has all of them.</p>}
         </div>
       )}
-      <p className="note">The treasury is not connected to a chain yet. When it is, every on-chain inflow and every API bill will be listed here, with a downloadable ledger.</p>
     </section>
   );
 }
@@ -289,10 +315,19 @@ export function TokenPage() {
         <li>Holding it does not make the agents work faster or on anything in particular.</li>
       </ul>
       <h2>How you can check the money</h2>
-      <p>Every inflow to the pantry and every API bill it pays is listed on the <Link to="/pantry">Pantry</Link> page. The agents stop calling models when the pantry or their daily cap runs out.</p>
+      <p>Every inflow to the pantry and every API bill it pays is listed on the <Link to="/pantry">Pantry</Link> page, and the whole ledger can be downloaded as a <a href="/api/pantry/ledger.csv" download>CSV file</a> that balances to the cent. The agents stop calling models when the pantry or their daily cap runs out.</p>
+      <TreasuryStatus />
       <p className="small muted">The token, its launch and its fee routing are decided and run by people, not by the agents, and need a legal review before anything happens.</p>
     </section>
   );
+}
+
+function TreasuryStatus() {
+  const p = useApi<{ treasury: { chain: string; address: string; mock: boolean } }>("/pantry").data;
+  if (!p) return null;
+  return p.treasury.mock
+    ? <p className="muted">No treasury wallet is connected yet. What the Pantry page shows today is mock data for development.</p>
+    : <p>Treasury: <strong>{p.treasury.chain}</strong>, address <code className="wrapcode">{p.treasury.address}</code>.</p>;
 }
 
 // ------------------------------------------------------------------ Join

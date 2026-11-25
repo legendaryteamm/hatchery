@@ -25,12 +25,24 @@ const feed = [
   { id: 50, ts: new Date().toISOString(), type: "checked", agentId: "agent-1", agentName: "Bomo", lemmaId: "L-core-002", payload: {}, message: null },
   { id: 49, ts: new Date().toISOString(), type: "model_call", agentId: "agent-1", agentName: "Bomo", lemmaId: "L-core-002", payload: {}, message: null },
 ];
-const pantry = { pantryUsd: "12.500000", inflowsUsd: "20.000000", apiSpendUsd: "7.500000", runwayDays: 8.3, perAgentCapUsd: "0.500000", killSwitch: false };
+const pantry = {
+  pantryUsd: "12.500000", inflowsUsd: "20.000000", apiSpendUsd: "7.500000", otherOutflowsUsd: "0.000000", topupsUsd: "5.000000", dailySpendUsd: "1.5", runwayDays: 8.3,
+  hungry: false, globalCapUsd: "0.41", perAgentCapUsd: "0.500000", spentTodayUsd: "0.1", killSwitch: false, recentInflows: [], treasury: { chain: "mock", address: "", mock: true },
+};
+const ledger = {
+  count: 3,
+  totals: { inflowsUsd: "20.000000", apiSpendUsd: "7.500000", otherOutflowsUsd: "0.000000", topupsUsd: "5.000000", pantryUsd: "12.500000" },
+  rows: [
+    { ts: "2026-05-02T10:00:00.000Z", kind: "api_spend", description: "API calls on 2026-05-02 (UTC): 40 x claude-opus-5-5", reference: "model_calls 2026-05-02 claude-opus-5-5", usdRateSource: "", amountUsd: "7.500000", pantryChangeUsd: "-7.500000", balanceUsd: "12.500000" },
+    { ts: "2026-05-01T11:00:00.000Z", kind: "topup_transfer", description: "Top-up: treasury wallet to API billing", reference: "invoice INV-1", usdRateSource: "", amountUsd: "5.000000", pantryChangeUsd: "0.000000", balanceUsd: "20.000000" },
+    { ts: "2026-05-01T10:00:00.000Z", kind: "inflow", description: "Mock inflow (development only): 20 native", reference: "mock-1", usdRateSource: "mock fixed rate", amountUsd: "20.000000", pantryChangeUsd: "20.000000", balanceUsd: "20.000000" },
+  ],
+};
 
 beforeEach(() => {
   vi.stubGlobal("fetch", vi.fn(async (url: string) => {
     const path = url.replace(/^\/api/, "").split("?")[0];
-    const body = path === "/colony" ? snapshot : path === "/feed" ? feed : path === "/pantry" ? pantry : [];
+    const body = path === "/colony" ? snapshot : path === "/feed" ? feed : path === "/pantry" ? pantry : path === "/pantry/ledger" ? ledger : [];
     return new Response(JSON.stringify(body), { status: 200 });
   }));
   vi.stubGlobal("EventSource", class { onmessage: unknown; close() {} constructor(public url: string) {} });
@@ -44,6 +56,10 @@ describe("feed sentences come only from event data", () => {
     expect(feedText({ id: 3, ts: "", type: "local_check", agentId: "a", lemmaId: "L-core-001", payload: { ok: true } })).toBeNull();
     expect(feedText({ id: 4, ts: "", type: "sleeping", agentId: "a", agentName: "Bomo", lemmaId: null, payload: { reason: "pantry_empty" } })!.text).toBe("Bomo went for a nap: the pantry is empty.");
     expect(feedText({ id: 5, ts: "", type: "reply_posted", agentId: "a", agentName: "Bomo", lemmaId: "L-core-001", payload: {}, message: { short: "try decide", body: "Try decide after intro.", toName: "Kizen" } })!.text).toBe("Bomo replied to Kizen: “Try decide after intro.”");
+    expect(feedText({ id: 7, ts: "", type: "pantry_outflow", agentId: null, lemmaId: null, payload: { kind: "topup_transfer", amountUsd: "40", reference: "INV-1" } })!.text).toBe("$40.00 moved from the treasury wallet to API billing (INV-1). The pantry total does not change.");
+    expect(feedText({ id: 8, ts: "", type: "pantry_outflow", agentId: null, lemmaId: null, payload: { kind: "other", amountUsd: "1.5", reference: "tx 0x1", note: "chain fee" } })!.text).toBe("$1.50 left the pantry: chain fee (tx 0x1).");
+    expect(feedText({ id: 9, ts: "", type: "pantry_low", agentId: null, lemmaId: null, payload: { pantryUsd: "2", runwayDays: 1.4 } })!.text).toBe("The pantry is low: about 1.4 days of food left at the current pace.");
+    expect(feedText({ id: 10, ts: "", type: "pantry_low", agentId: null, lemmaId: null, payload: { pantryUsd: "0.000000", runwayDays: 0 } })!.text).toMatch(/^The pantry is empty/);
     expect(feedText({ id: 6, ts: "", type: "pantry_inflow", agentId: null, lemmaId: null, payload: { amountUsd: "40", chain: "mock" } })!.text).toBe("$40.00 came into the pantry (mock inflow, development only).");
   });
 });
@@ -83,5 +99,18 @@ describe("the colony page shows only data from the API", () => {
     expect(main).toMatch(/no promise of profit, returns, or any change in price/);
     expect(main).not.toMatch(/moon|guarantee|price will|returns of|APY|invest now/i);
     expect(within(document.querySelector("main")!).getByRole("link", { name: "Pantry" }).getAttribute("href")).toBe("/pantry");
+  });
+});
+
+describe("the pantry page", () => {
+  it("labels mock money, shows the ledger with a running balance, and links the CSV", async () => {
+    render(<MemoryRouter initialEntries={["/pantry"]}><App /></MemoryRouter>);
+    expect(await screen.findByText(/Development pantry\./)).toBeTruthy();
+    const table = (await screen.findByText("Money in", { selector: "td" })).closest("table")!;
+    const rows = within(table).getAllByRole("row").slice(1).map((r) => r.textContent);
+    expect(rows[0]).toMatch(/API calls.*−\$7\.50.*\$12\.50$/);
+    expect(rows[1]).toMatch(/Top-up \(no change\).*\$5\.00 moved.*\$20\.00$/);
+    expect(rows[2]).toMatch(/Money in.*\+\$20\.00.*\$20\.00$/);
+    expect(screen.getByRole("link", { name: /Download the full ledger/ }).getAttribute("href")).toBe("/api/pantry/ledger.csv");
   });
 });
