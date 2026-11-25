@@ -5,13 +5,16 @@
  *   recheck          re-check scan + re-judge everything marked (needs the judge)
  *   export-proofs    write every checked proof to lean/Proofs/<L>.lean (pinned sources)
  *   report           print lemma statuses, attempts and spend
+ *   pantry-mock-inflow <usd>   DEV ONLY: add a mock inflow (chain "mock") so agents have food
+ *   kill-switch on|off         flip the shared kill switch
  */
 import { mkdirSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { eq, sql } from "drizzle-orm";
 import { loadConfig } from "./config.ts";
 import { connect, runMigrations } from "./db/client.ts";
-import { lemmas } from "./db/schema.ts";
+import { randomUUID } from "node:crypto";
+import { lemmas, pantryInflows } from "./db/schema.ts";
 import { HttpJudgeClient } from "./judge-client.ts";
 import { LeanRepo } from "./lean-repo.ts";
 import { Desk } from "./service.ts";
@@ -50,8 +53,21 @@ try {
     console.log("model calls:", t);
     const ev = await db.execute(sql`select type, count(*)::int as n from events group by type order by type`);
     console.table(ev);
+  } else if (cmd === "pantry-mock-inflow") {
+    const usd = Number(process.argv[3]);
+    if (!(usd > 0)) throw new Error("usage: desk pantry-mock-inflow <usd>");
+    await db.insert(pantryInflows).values({
+      txHash: `mock-${randomUUID()}`, chain: "mock", amountNative: String(usd), amountUsd: usd.toFixed(6),
+      usdRateSource: "mock adapter (1 native = 1 USD); development only", ts: new Date(),
+    });
+    console.log(await desk.budget(null));
+  } else if (cmd === "kill-switch") {
+    const on = process.argv[3];
+    if (on !== "on" && on !== "off") throw new Error("usage: desk kill-switch on|off");
+    await desk.setKillSwitch(on === "on", `cli:${process.env.USER ?? "unknown"}`);
+    console.log((await desk.budget(null)).killSwitch);
   } else {
-    console.error("usage: desk migrate | sync | recheck | export-proofs | report");
+    console.error("usage: desk migrate | sync | recheck | export-proofs | report | pantry-mock-inflow <usd> | kill-switch on|off");
     process.exitCode = 2;
   }
 } finally {

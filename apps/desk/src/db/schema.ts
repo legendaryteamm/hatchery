@@ -67,6 +67,11 @@ export const lemmas = pgTable("lemmas", {
   /** Checked lemmas this proof imports directly (`import Proofs.L_x`). */
   proofImports: text("proof_imports").array().notNull().default(sql`'{}'::text[]`),
   checkedVerdict: jsonb("checked_verdict"),
+  /** ext (6b handoff): full handoff note (approaches, errors, best partial proof) for the next agent. */
+  handoffNote: text("handoff_note"),
+  /** ext (6b handoff): the lemma is offered first to this idle teammate until offered_until. */
+  offeredTo: text("offered_to"),
+  offeredUntil: ts("offered_until"),
 });
 
 export const leases = pgTable("leases", {
@@ -85,6 +90,8 @@ export const agents = pgTable("agents", {
   kind: agentKind("kind").notNull().default("internal"),
   model: text("model").notNull(),
   createdAt: ts("created_at").notNull().defaultNow(),
+  /** ext: last request from this agent; "active" agents share the daily budget. */
+  lastSeenAt: ts("last_seen_at"),
 });
 
 export const attempts = pgTable(
@@ -117,8 +124,12 @@ export const modelCalls = pgTable(
     ts: ts("ts").notNull().defaultNow(),
     agentId: text("agent_id").notNull().references(() => agents.id),
     attemptId: integer("attempt_id").references(() => attempts.id),
-    purpose: text("purpose").notNull(), // "prove" now; "question" / "reply" / ... in Phase 2
+    purpose: text("purpose").notNull(), // "prove" | "reply"
+    /** The model that served this part of the call (a refusal fallback can add a second part). */
     model: text("model").notNull(),
+    /** Index of the part within one API call (iterations of usage), 0-based. */
+    part: integer("part").notNull().default(0),
+    servedByFallback: boolean("served_by_fallback").notNull().default(false),
     tokensIn: integer("tokens_in").notNull(),
     tokensOut: integer("tokens_out").notNull(),
     cacheReadTokens: integer("cache_read_tokens").notNull(),
@@ -140,6 +151,29 @@ export const messages = pgTable("messages", {
   body: text("body").notNull(),
   short: text("short").notNull(),
   costUsd: usd("cost_usd").notNull().default("0"),
+  // ext (6b): routing and delivery
+  replyTo: integer("reply_to"),
+  routedTo: text("routed_to").array().notNull().default(sql`'{}'::text[]`),
+  deliveredAt: ts("delivered_at"),
+  deliveredInAttempt: integer("delivered_in_attempt"),
+  expiresAt: ts("expires_at"),
+});
+
+/** ext (6b reuse): which checked lemma helped which. */
+export const reuses = pgTable("reuses", {
+  id: serial("id").primaryKey(),
+  ts: ts("ts").notNull().defaultNow(),
+  lemmaId: text("lemma_id").notNull().references(() => lemmas.id),
+  reusedLemmaId: text("reused_lemma_id").notNull().references(() => lemmas.id),
+  agentId: text("agent_id").notNull(),
+});
+
+/** ext: shared switches (kill switch), so every desk instance and worker sees the same value. */
+export const settings = pgTable("settings", {
+  key: text("key").primaryKey(),
+  value: jsonb("value").notNull(),
+  updatedAt: ts("updated_at").notNull().defaultNow(),
+  updatedBy: text("updated_by").notNull(),
 });
 
 export const events = pgTable(

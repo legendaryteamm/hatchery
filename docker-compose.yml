@@ -1,8 +1,8 @@
-# Local development stack (Phase 1): postgres, Lean judge, desk, and one worker (opt-in).
+# Local development stack (Phase 2): postgres, Lean judge, desk, and a fleet of workers (opt-in).
 # web and indexer are added in later phases (see BUILD_PROMPT.md section 3).
 #
 #   JUDGE_FLAVOR=lite docker compose up -d desk            # postgres + judge + desk (no model calls)
-#   JUDGE_FLAVOR=lite docker compose --profile agents up worker   # one agent: SPENDS API MONEY
+#   JUDGE_FLAVOR=lite docker compose --profile agents up worker   # WORKER_COUNT agents: SPENDS API MONEY
 # JUDGE_FLAVOR defaults to full (pinned Mathlib, ~7-8 GB): build that one in the cloud (docs/deploy.md).
 name: hatchery
 
@@ -78,12 +78,18 @@ services:
       JUDGE_API_TOKEN: ${JUDGE_API_TOKEN:-}
       DESK_WORKER_TOKEN: ${DESK_WORKER_TOKEN:-}
       MATHLIB_LEMMAS_ENABLED: ${MATHLIB_LEMMAS_ENABLED:-0}
-      GIT_COMMIT: ${GIT_COMMIT:-unknown}
-      LEASE_TTL_MINUTES: ${LEASE_TTL_MINUTES:-30}
+      LEASE_TTL_SECONDS: ${LEASE_TTL_SECONDS:-1800}
       AGENT_MAX_ATTEMPTS_PER_LEMMA: ${AGENT_MAX_ATTEMPTS_PER_LEMMA:-3}
+      GLOBAL_DAILY_CAP_USD: ${GLOBAL_DAILY_CAP_USD:-100}
+      RUNWAY_TARGET_DAYS: ${RUNWAY_TARGET_DAYS:-30}
+      KILL_SWITCH: ${KILL_SWITCH:-0}
+      ADMIN_TOKEN: ${ADMIN_TOKEN:-}
+      PROOF_COMMIT_MODE: ${PROOF_COMMIT_MODE:-commit}
+    # The desk writes and commits accepted proofs into the checkout, so it runs as the checkout's owner.
+    user: "${HATCHERY_UID:-1000}:${HATCHERY_GID:-1000}"
     volumes:
-      # Trusted statements/defs are read from the checkout, read-only.
-      - ./lean:/app/lean:ro
+      # The checkout: trusted statements/defs are read from lean/, accepted proofs committed to lean/Proofs/.
+      - .:/repo
     ports:
       - "127.0.0.1:4200:4200"
 
@@ -101,11 +107,12 @@ services:
       DESK_URL: http://desk:4200
       DESK_WORKER_TOKEN: ${DESK_WORKER_TOKEN:-}
       ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:-}
-      AGENT_ID: ${AGENT_ID:-agent-1}
+      WORKER_COUNT: ${WORKER_COUNT:-2}
+      AGENT_ID_PREFIX: ${AGENT_ID_PREFIX:-agent}
       AGENT_MODEL: ${AGENT_MODEL:-}
       AGENT_MAX_TURNS: ${AGENT_MAX_TURNS:-20}
       AGENT_EFFORT: ${AGENT_EFFORT:-high}
-      WORKER_MAX_RUN_USD: ${WORKER_MAX_RUN_USD:-5}
+      WORKER_MAX_RUN_USD: ${WORKER_MAX_RUN_USD:-0}
       KILL_SWITCH: ${KILL_SWITCH:-0}
     restart: "no"
 

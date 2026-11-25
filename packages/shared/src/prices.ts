@@ -4,7 +4,8 @@
  * Source: Anthropic first-party API list prices as of PRICES_AS_OF (USD per million tokens).
  * Cache writes use the 5-minute TTL rate (1.25x input). Override or extend at runtime with the
  * PRICE_TABLE_JSON env var (same shape as PRICES) - e.g. when prices change or for a new model.
- * A model missing from the table cannot be used: the desk refuses to record unpriced spend.
+ * A model missing from the table cannot be used: the desk refuses to record unpriced spend, and a
+ * worker whose usage is refused stops with an error rather than spending without a record.
  */
 export const PRICES_AS_OF = "2026-11-03";
 
@@ -20,6 +21,17 @@ export const PRICES: Record<string, ModelPrice> = {
   "claude-opus-5-5": { inputPerMTok: 4, outputPerMTok: 20, cacheWritePerMTok: 5, cacheReadPerMTok: 0.2 },
   "claude-sonnet-5-5": { inputPerMTok: 2, outputPerMTok: 10, cacheWritePerMTok: 2.5, cacheReadPerMTok: 0.1 },
   "claude-haiku-5-5": { inputPerMTok: 0.1, outputPerMTok: 0.5, cacheWritePerMTok: 0.125, cacheReadPerMTok: 0.01 },
+  // Models a server-side refusal fallback ("fallbacks": "default") can route to. Input/output are
+  // list prices as of PRICES_AS_OF; cache rates use the standard ratios (write 1.25x, read 0.1x input).
+  "claude-fable-5-1": { inputPerMTok: 10, outputPerMTok: 50, cacheWritePerMTok: 12.5, cacheReadPerMTok: 1 },
+  "claude-fable-5": { inputPerMTok: 10, outputPerMTok: 50, cacheWritePerMTok: 12.5, cacheReadPerMTok: 1 },
+  "claude-opus-5": { inputPerMTok: 5, outputPerMTok: 25, cacheWritePerMTok: 6.25, cacheReadPerMTok: 0.5 },
+  "claude-opus-4-8": { inputPerMTok: 5, outputPerMTok: 25, cacheWritePerMTok: 6.25, cacheReadPerMTok: 0.5 },
+  "claude-opus-4-7": { inputPerMTok: 5, outputPerMTok: 25, cacheWritePerMTok: 6.25, cacheReadPerMTok: 0.5 },
+  "claude-opus-4-6": { inputPerMTok: 5, outputPerMTok: 25, cacheWritePerMTok: 6.25, cacheReadPerMTok: 0.5 },
+  "claude-sonnet-5": { inputPerMTok: 2, outputPerMTok: 10, cacheWritePerMTok: 2.5, cacheReadPerMTok: 0.2 },
+  "claude-sonnet-4-6": { inputPerMTok: 3, outputPerMTok: 15, cacheWritePerMTok: 3.75, cacheReadPerMTok: 0.3 },
+  "claude-haiku-4-5": { inputPerMTok: 1, outputPerMTok: 5, cacheWritePerMTok: 1.25, cacheReadPerMTok: 0.1 },
   // Test-only model used by the scripted fake provider; priced so tests exercise real arithmetic.
   "fake-model": { inputPerMTok: 1, outputPerMTok: 5, cacheWritePerMTok: 1.25, cacheReadPerMTok: 0.1 },
 };

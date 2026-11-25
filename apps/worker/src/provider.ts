@@ -25,17 +25,27 @@ export interface ToolDef {
 
 export type StopReason = "end_turn" | "tool_use" | "max_tokens" | "refusal" | "other";
 
+/** Token usage of one model that served (part of) a call. A refusal fallback adds a part. */
+export interface UsagePart extends TokenUsage {
+  model: string;
+  servedByFallback: boolean;
+}
+
 export interface ModelTurn {
   content: Block[];
   stopReason: StopReason;
-  usage: TokenUsage;
-  /** The model that actually served the turn (may differ after a refusal fallback). */
-  model: string;
+  /** One entry per model that served this call, priced separately by the desk. */
+  parts: UsagePart[];
   requestId?: string;
-  fallbackUsed: boolean;
+}
+
+export interface CallOptions {
+  /** Override max output tokens (e.g. short teammate replies). */
+  maxTokens?: number;
+  effort?: "low" | "medium" | "high" | "xhigh" | "max";
 }
 
 export interface ModelProvider {
   readonly model: string;
-  call(req: { system: string; messages: ChatMessage[]; tools: ToolDef[] }): Promise<ModelTurn>;
+  call(req: { system: string; messages: ChatMessage[]; tools: ToolDef[] }, opts?: CallOptions): Promise<ModelTurn>;
 }

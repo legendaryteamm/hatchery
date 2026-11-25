@@ -9,7 +9,7 @@ import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { eq, sql } from "drizzle-orm";
 import { buildServer, Desk, LeanRepo, type JudgeClient } from "@hatchery/desk";
 import { judge, runnerInfo, searchLibrary, type JudgeConfig } from "@hatchery/judge";
-import { freshDb, REPO_LEAN_DIR, testConfig, WORKER_TOKEN } from "../../desk/test/helpers.ts";
+import { addInflow, freshDb, REPO_LEAN_DIR, testConfig, WORKER_TOKEN } from "../../desk/test/helpers.ts";
 import * as schema from "../../desk/src/db/schema.ts";
 import { Agent } from "../src/agent.ts";
 import { DeskClient } from "../src/desk-client.ts";
@@ -38,6 +38,7 @@ describe("one agent, end to end (scripted model, real judge)", () => {
     const info = await inProcessJudge.info();
     if (info.trustedSha !== desk.repo.trustedSha()) throw new Error(`runner image ${image} is stale: run pnpm runner:build:lite`);
     await desk.syncStatements();
+    await addInflow(fresh.db, 100_000);
     app = buildServer(desk);
     await app.listen({ host: "127.0.0.1", port: 0 });
     deskUrl = `http://127.0.0.1:${(app.server.address() as AddressInfo).port}`;
@@ -48,7 +49,7 @@ describe("one agent, end to end (scripted model, real judge)", () => {
   });
 
   it("leases, proves 4 of 5, abandons the 5th after 3 attempts, and records attempts, costs and events", async () => {
-    const provider = new FakeProvider((leanName, turn, last) => {
+    const provider = new FakeProvider(({ leanName, turn, lastResult: last }) => {
       if (leanName === "L_core_005") {
         return turn === 0 ? [call("lean_check", { source: WRONG_005 })] : [call("submit_proof", { source: WRONG_005, notes: "tried rfl" })];
       }
@@ -58,7 +59,8 @@ describe("one agent, end to end (scripted model, real judge)", () => {
     });
     const logs: string[] = [];
     const agent = new Agent(new DeskClient(deskUrl, WORKER_TOKEN, "agent-test-1"), provider, {
-      maxTurns: 6, maxRunUsd: 1, maxLemmas: 0, exitWhenIdle: true, idleSleepMs: 0, killSwitch: () => false, log: (m) => logs.push(m),
+      maxTurns: 6, maxRunUsd: 1, maxLemmas: 0, exitWhenIdle: true, idleSleepMs: 0, sleepPollMs: 10, replyWaitMs: 0, replyMaxTokens: 256,
+      killSwitch: () => false, log: (m) => logs.push(m),
     });
     const result = await agent.run();
     expect(result.checked.sort()).toEqual(["L-core-001", "L-core-002", "L-core-003", "L-core-004"]);
@@ -94,7 +96,8 @@ describe("one agent, end to end (scripted model, real judge)", () => {
   it("the run spend cap stops the agent before the next model call", async () => {
     const provider = new FakeProvider(() => [call("lean_check", { source: WRONG_005 })]);
     const agent = new Agent(new DeskClient(deskUrl, WORKER_TOKEN, "agent-test-2"), provider, {
-      maxTurns: 50, maxRunUsd: 0.01, maxLemmas: 0, exitWhenIdle: true, idleSleepMs: 0, killSwitch: () => false, log: () => {},
+      maxTurns: 50, maxRunUsd: 0.01, maxLemmas: 0, exitWhenIdle: true, idleSleepMs: 0, sleepPollMs: 10, replyWaitMs: 0, replyMaxTokens: 256,
+      killSwitch: () => false, log: () => {},
     });
     const result = await agent.run();
     expect(result.stopReason).toMatch(/run spend cap reached/);

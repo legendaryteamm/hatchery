@@ -1,11 +1,12 @@
 /**
- * Desk core: leases, attempts, spend, submissions and re-checks.
- * Every state change writes exactly one `events` row in the same transaction.
+ * Desk core: leases, attempts, spend, budget, collaboration, submissions and re-checks.
+ * Every state change writes exactly one `events` row (per affected entity) in the same transaction.
  */
-import { and, asc, desc, eq, inArray, isNull, lt, sql } from "drizzle-orm";
+import { and, asc, desc, eq, gte, inArray, isNull, lt, sql } from "drizzle-orm";
 import {
   costMicroUsd,
   lemmaIdToLeanName,
+  MESSAGE_LIMITS,
   microsToUsd,
   petIdentity,
   priceTable,
@@ -13,16 +14,19 @@ import {
   type EventType,
   type JudgeVerdict,
   type ProofDep,
+  type SleepReason,
   type TokenUsage,
 } from "@hatchery/shared";
+import { budgetStatus, type BudgetStatus } from "./budget.ts";
 import type { DeskConfig } from "./config.ts";
 import type { Db, Tx } from "./db/client.ts";
-import { agents, attempts, events, leases, lemmas, modelCalls, programs, statements } from "./db/schema.ts";
+import { agents, attempts, events, leases, lemmas, messages, modelCalls, programs, reuses, settings, statements } from "./db/schema.ts";
 import type { JudgeClient, JudgeInfo } from "./judge-client.ts";
 import { sha256, type LeanRepo } from "./lean-repo.ts";
+import { ProofCommitter } from "./proof-committer.ts";
 
 export class DeskError extends Error {
-  constructor(readonly status: number, message: string) {
+  constructor(readonly status: number, message: string, readonly reason?: string) {
     super(message);
   }
 }
@@ -47,6 +51,15 @@ export async function emit(
   await db.insert(events).values({ type, agentId: e.agentId ?? null, lemmaId: e.lemmaId ?? null, payload: e.payload ?? {} });
 }
 
+export interface ReplyForAgent {
+  id: number;
+  fromAgent: string;
+  fromName: string;
+  kind: string;
+  body: string;
+  questionId: number | null;
+}
+
 export interface LeaseContext {
   lemmaId: string;
   leanName: string;
@@ -59,22 +72,58 @@ export interface LeaseContext {
   checkedLemmas: { id: string; leanName: string; leanStatement: string }[];
   myFailedAttempts: number;
   maxAttemptsPerLemma: number;
+  /** Handoff note from the previous agent (approaches, errors, best partial proof), if any. */
+  handoffNote: string | null;
+  /** True when this lemma was offered to this agent through a handoff. */
+  offeredToMe: boolean;
+}
+
+export interface UsagePart extends TokenUsage {
+  model: string;
+  servedByFallback?: boolean;
+}
+
+export interface ColonyState {
+  agents: { id: string; name: string; program: string | null; lemmaId: string | null; status: "working" | "idle" | "sleeping" }[];
+  recentlyChecked: { id: string; agentId: string | null; at: string | null }[];
 }
 
 const PROOF_IMPORT_RE = /^[ \t]*import[ \t]+Proofs\.(L_[A-Za-z0-9_]+)\s*$/gm;
+const SEEN_THROTTLE_MS = 5000;
+
+function words(s: string): Set<string> {
+  return new Set(s.match(/[A-Za-z_][A-Za-z0-9_.']*/g) ?? []);
+}
+function jaccard(a: Set<string>, b: Set<string>): number {
+  let inter = 0;
+  for (const x of a) if (b.has(x)) inter++;
+  return inter / Math.max(1, a.size + b.size - inter);
+}
+async function countRows(db: DbOrTx, q: ReturnType<typeof sql>): Promise<number> {
+  const rows = await db.execute<{ n: number }>(q);
+  return Number(rows[0]?.n ?? 0);
+}
 
 export class Desk {
   private judgeInfoCache: { info: JudgeInfo; at: number } | null = null;
+  private seen = new Map<string, number>();
+  readonly committer: ProofCommitter;
 
   constructor(
     readonly db: Db,
     readonly judge: JudgeClient,
     readonly repo: LeanRepo,
     readonly config: DeskConfig,
-    private now: () => Date = () => new Date(),
-  ) {}
+    readonly now: () => Date = () => new Date(),
+  ) {
+    this.committer = new ProofCommitter(repo.dir, {
+      mode: config.PROOF_COMMIT_MODE,
+      authorName: config.PROOF_COMMIT_AUTHOR_NAME,
+      authorEmail: config.PROOF_COMMIT_AUTHOR_EMAIL,
+    });
+  }
 
-  // ---------------------------------------------------------------- judge freshness / gates
+  // ================================================================ judge freshness / gates
 
   async judgeInfo(force = false): Promise<JudgeInfo> {
     if (!force && this.judgeInfoCache && Date.now() - this.judgeInfoCache.at < 60_000) return this.judgeInfoCache.info;
@@ -99,7 +148,48 @@ export class Desk {
     return (await this.judgeInfo()).flavor === "full";
   }
 
-  // ---------------------------------------------------------------- statements
+  // ================================================================ budget and kill switch
+
+  /** Record that an agent is alive (it then counts as active for the per-agent cap). */
+  async touch(agentId: string): Promise<void> {
+    const t = this.now().getTime();
+    if ((this.seen.get(agentId) ?? -Infinity) > t - SEEN_THROTTLE_MS) return;
+    this.seen.set(agentId, t);
+    await this.db.update(agents).set({ lastSeenAt: this.now() }).where(eq(agents.id, agentId));
+  }
+
+  budget(agentId: string | null): Promise<BudgetStatus> {
+    return budgetStatus(this.db, this.config, agentId, this.now());
+  }
+
+  async setKillSwitch(on: boolean, by: string): Promise<void> {
+    await this.db.transaction(async (tx) => {
+      await tx
+        .insert(settings)
+        .values({ key: "kill_switch", value: { on }, updatedBy: by, updatedAt: this.now() })
+        .onConflictDoUpdate({ target: settings.key, set: { value: { on }, updatedBy: by, updatedAt: this.now() } });
+      await emit(tx, "kill_switch", { payload: { on, by } });
+    });
+  }
+
+  /** Worker reports it went to sleep. One event per transition (repeats are ignored). */
+  async reportSleeping(agentId: string, reason: SleepReason): Promise<boolean> {
+    const [last] = await this.db
+      .select()
+      .from(events)
+      .where(and(eq(events.agentId, agentId), inArray(events.type, ["sleeping", "leased", "model_call", "agent_registered"])))
+      .orderBy(desc(events.id))
+      .limit(1);
+    if (last?.type === "sleeping" && (last.payload as { reason?: string }).reason === reason) return false;
+    const b = await this.budget(agentId);
+    await emit(this.db, "sleeping", {
+      agentId,
+      payload: { reason, agentSpentUsd: b.agentSpentUsd, perAgentCapUsd: b.perAgentCapUsd, globalSpentUsd: b.globalSpentUsd, globalCapUsd: b.globalCapUsd },
+    });
+    return true;
+  }
+
+  // ================================================================ statements
 
   /** Sync trusted statement files into the DB (approved: they are committed by a maintainer). */
   async syncStatements(): Promise<{ added: string[]; changed: string[] }> {
@@ -139,25 +229,26 @@ export class Desk {
     return { added, changed };
   }
 
-  // ---------------------------------------------------------------- agents
+  // ================================================================ agents
 
   async registerAgent(id: string, model: string, kind: "internal" | "external" = "internal") {
     const pet = petIdentity(id);
     const [row] = await this.db
       .insert(agents)
-      .values({ id, model, kind, displayName: pet.displayName, species: pet.species, shellColor: pet.shellColor })
+      .values({ id, model, kind, displayName: pet.displayName, species: pet.species, shellColor: pet.shellColor, lastSeenAt: this.now() })
       .onConflictDoNothing()
       .returning();
+    this.seen.set(id, this.now().getTime());
     if (row) {
       await emit(this.db, "agent_registered", { agentId: id, payload: { model, kind } });
       return row;
     }
-    await this.db.update(agents).set({ model }).where(eq(agents.id, id));
+    await this.db.update(agents).set({ model, lastSeenAt: this.now() }).where(eq(agents.id, id));
     const [existing] = await this.db.select().from(agents).where(eq(agents.id, id));
     return existing!;
   }
 
-  // ---------------------------------------------------------------- leases
+  // ================================================================ leases
 
   async expireLeases(): Promise<string[]> {
     const now = this.now();
@@ -178,47 +269,53 @@ export class Desk {
 
   async lease(agentId: string, programSlug?: string): Promise<LeaseContext | null> {
     await this.assertJudgeFresh();
+    const b = await this.budget(agentId);
+    if (!b.allowed) throw new DeskError(429, `not allowed to work now: ${b.reason}`, b.reason ?? undefined);
     await this.expireLeases();
     const mathlib = await this.mathlibAllowed();
     const max = this.config.AGENT_MAX_ATTEMPTS_PER_LEMMA;
     const now = this.now();
-    const expiresAt = new Date(now.getTime() + this.config.LEASE_TTL_MINUTES * 60_000);
-    const lemmaId = await this.db.transaction(async (tx) => {
+    const nowIso = now.toISOString();
+    const expiresAt = new Date(now.getTime() + this.config.LEASE_TTL_SECONDS * 1000);
+    const leased = await this.db.transaction(async (tx) => {
       const held = await tx.select().from(leases).where(eq(leases.holder, agentId));
       if (held.length) throw new DeskError(409, `agent already holds a lease on ${held[0]!.lemmaId}`);
-      const rows = await tx.execute<{ id: string }>(sql`
-        select l.id from lemmas l
+      const rows = await tx.execute<{ id: string; offered: boolean }>(sql`
+        select l.id, coalesce(l.offered_to = ${agentId} and l.offered_until > ${nowIso}::timestamptz, false) as offered
+        from lemmas l
         join statements s on s.id = l.id
         join programs p on p.id = s.program_id
         where l.status = 'open' and s.status = 'approved' and p.status = 'active'
           and (${mathlib} or not s.requires_mathlib)
           and (${programSlug ?? null}::text is null or p.slug = ${programSlug ?? null})
+          and not (l.offered_to is not null and l.offered_to <> ${agentId} and l.offered_until > ${nowIso}::timestamptz)
           and not exists (select 1 from events e where e.type = 'abandoned_by_agent' and e.agent_id = ${agentId} and e.lemma_id = l.id)
-          and (select count(*) from attempts a where a.lemma_id = l.id and a.agent_id = ${agentId} and a.result is not null and a.result <> 'checked') < ${max}
-        order by (select count(*) from attempts a where a.lemma_id = l.id) asc, l.id asc
+          and (select count(*) from attempts a where a.lemma_id = l.id and a.agent_id = ${agentId} and a.result = 'failed') < ${max}
+        order by offered desc, (select count(*) from attempts a where a.lemma_id = l.id) asc, l.id asc
         limit 1
         for update of l skip locked`);
-      const id = rows[0]?.id;
-      if (!id) return null;
-      await tx.update(lemmas).set({ status: "leased" }).where(eq(lemmas.id, id));
-      await tx.insert(leases).values({ lemmaId: id, holder: agentId, expiresAt, lastHeartbeat: now });
-      await emit(tx, "leased", { agentId, lemmaId: id, payload: { expiresAt: expiresAt.toISOString() } });
-      return id;
+      const row = rows[0];
+      if (!row) return null;
+      await tx.update(lemmas).set({ status: "leased", offeredTo: null, offeredUntil: null }).where(eq(lemmas.id, row.id));
+      await tx.insert(leases).values({ lemmaId: row.id, holder: agentId, expiresAt, lastHeartbeat: now });
+      await emit(tx, "leased", { agentId, lemmaId: row.id, payload: { expiresAt: expiresAt.toISOString(), viaHandoff: row.offered } });
+      return row;
     });
-    return lemmaId ? this.leaseContext(agentId, lemmaId, expiresAt) : null;
+    return leased ? this.leaseContext(agentId, leased.id, expiresAt, leased.offered) : null;
   }
 
-  async leaseContext(agentId: string, lemmaId: string, expiresAt: Date): Promise<LeaseContext> {
+  async leaseContext(agentId: string, lemmaId: string, expiresAt: Date, offeredToMe = false): Promise<LeaseContext> {
     const [st] = await this.db
-      .select({ s: statements, programSlug: programs.slug })
+      .select({ s: statements, programSlug: programs.slug, handoffNote: lemmas.handoffNote })
       .from(statements)
       .innerJoin(programs, eq(programs.id, statements.programId))
+      .innerJoin(lemmas, eq(lemmas.id, statements.id))
       .where(eq(statements.id, lemmaId));
     if (!st) throw new DeskError(404, `no statement ${lemmaId}`);
     const prev = await this.db
       .select()
       .from(attempts)
-      .where(and(eq(attempts.lemmaId, lemmaId), sql`${attempts.result} is not null and ${attempts.result} <> 'checked'`))
+      .where(and(eq(attempts.lemmaId, lemmaId), eq(attempts.result, "failed")))
       .orderBy(desc(attempts.id))
       .limit(8);
     const checked = await this.db
@@ -228,6 +325,7 @@ export class Desk {
       .where(eq(lemmas.status, "checked"))
       .orderBy(asc(lemmas.id))
       .limit(50);
+    const mine = await countRows(this.db, sql`select count(*)::int as n from attempts where lemma_id = ${lemmaId} and agent_id = ${agentId} and result = 'failed'`);
     return {
       lemmaId,
       leanName: st.s.leanName,
@@ -244,8 +342,10 @@ export class Desk {
         at: (a.endedAt ?? a.startedAt).toISOString(),
       })),
       checkedLemmas: checked,
-      myFailedAttempts: prev.filter((a) => a.agentId === agentId).length,
+      myFailedAttempts: mine,
       maxAttemptsPerLemma: this.config.AGENT_MAX_ATTEMPTS_PER_LEMMA,
+      handoffNote: st.handoffNote,
+      offeredToMe,
     };
   }
 
@@ -258,31 +358,79 @@ export class Desk {
   async heartbeat(agentId: string, lemmaId: string): Promise<{ expiresAt: string }> {
     await this.requireLease(this.db, agentId, lemmaId);
     const now = this.now();
-    const expiresAt = new Date(now.getTime() + this.config.LEASE_TTL_MINUTES * 60_000);
+    const expiresAt = new Date(now.getTime() + this.config.LEASE_TTL_SECONDS * 1000);
     await this.db.update(leases).set({ lastHeartbeat: now, expiresAt }).where(eq(leases.lemmaId, lemmaId));
     return { expiresAt: expiresAt.toISOString() };
   }
 
-  /** Give a lemma back. `abandon` = this agent gives up after its max attempts (with notes). */
-  async release(agentId: string, lemmaId: string, notes: string, abandon: boolean): Promise<void> {
+  /**
+   * Give a lemma back. `abandon` = this agent gives up after its max attempts. With a handoff note,
+   * the lemma is offered first to an idle teammate (same program) for HANDOFF_OFFER_SECONDS.
+   */
+  async release(
+    agentId: string,
+    lemmaId: string,
+    notes: string,
+    abandon: boolean,
+    handoff?: { body: string; short: string; note: string },
+  ): Promise<{ offeredTo: string | null }> {
+    const teammate = abandon && handoff ? await this.pickHandoffTeammate(agentId, lemmaId) : null;
+    const now = this.now();
     await this.db.transaction(async (tx) => {
       await this.requireLease(tx, agentId, lemmaId);
       await tx.delete(leases).where(eq(leases.lemmaId, lemmaId));
-      const counted = await tx.execute<{ n: number }>(
-        sql`select count(*)::int as n from attempts where lemma_id = ${lemmaId} and result is not null and result <> 'checked'`,
-      );
-      const n = Number(counted[0]?.n ?? 0);
+      const n = await countRows(tx, sql`select count(*)::int as n from attempts where lemma_id = ${lemmaId} and result = 'failed'`);
       const globallyAbandoned = n >= this.config.LEMMA_ABANDON_AFTER_ATTEMPTS;
-      await tx.update(lemmas).set({ status: globallyAbandoned ? "abandoned" : "open" }).where(eq(lemmas.id, lemmaId));
+      await tx
+        .update(lemmas)
+        .set({
+          status: globallyAbandoned ? "abandoned" : "open",
+          ...(handoff ? { handoffNote: handoff.note.slice(0, 6000) } : {}),
+          offeredTo: globallyAbandoned ? null : teammate,
+          offeredUntil: teammate && !globallyAbandoned ? new Date(now.getTime() + this.config.HANDOFF_OFFER_SECONDS * 1000) : null,
+        })
+        .where(eq(lemmas.id, lemmaId));
       await emit(tx, abandon ? "abandoned_by_agent" : "released", {
         agentId,
         lemmaId,
         payload: { notes: notes.slice(0, 2000), failedAttemptsTotal: n, lemmaAbandoned: globallyAbandoned },
       });
+      if (handoff) {
+        const [m] = await tx
+          .insert(messages)
+          .values({
+            fromAgent: agentId,
+            toAgent: teammate,
+            lemmaId,
+            kind: "handoff",
+            body: handoff.body.slice(0, MESSAGE_LIMITS.body),
+            short: handoff.short.slice(0, MESSAGE_LIMITS.short),
+            ts: now,
+          })
+          .returning();
+        await emit(tx, "handoff", { agentId, lemmaId, payload: { messageId: m!.id, toAgent: teammate, short: m!.short } });
+      }
     });
+    return { offeredTo: teammate };
   }
 
-  // ---------------------------------------------------------------- attempts and spend
+  private async pickHandoffTeammate(agentId: string, lemmaId: string): Promise<string | null> {
+    const program = await this.programOfLemma(lemmaId);
+    for (const c of await this.liveAgents(agentId)) {
+      if (c.leased || (c.program !== null && c.program !== program)) continue;
+      const [gaveUp] = await this.db
+        .select({ id: events.id })
+        .from(events)
+        .where(and(eq(events.type, "abandoned_by_agent"), eq(events.agentId, c.id), eq(events.lemmaId, lemmaId)))
+        .limit(1);
+      if (gaveUp) continue;
+      if (!(await this.budget(c.id)).allowed) continue;
+      return c.id;
+    }
+    return null;
+  }
+
+  // ================================================================ attempts and spend
 
   async startAttempt(agentId: string, lemmaId: string): Promise<number> {
     return this.db.transaction(async (tx) => {
@@ -302,61 +450,84 @@ export class Desk {
     return a;
   }
 
-  /** Record one model call from real token counts. Cost is computed here, from the price table. */
+  /**
+   * Record one model call from real token counts. A call has one part per model that served it
+   * (a refusal fallback adds a part), each priced at its own model's rates. Cost is computed here.
+   */
   async recordUsage(
     attemptId: number | null,
     agentId: string,
-    u: TokenUsage & { model: string; purpose: string; requestId?: string; fallbackUsed?: boolean },
-  ): Promise<{ costUsd: string; attemptCostUsd: string | null }> {
-    let micros: number;
+    call: { purpose: "prove" | "reply"; parts: UsagePart[]; requestId?: string },
+    tx?: Tx,
+  ): Promise<{ costUsd: string; costMicros: number; attemptCostUsd: string | null }> {
+    if (!call.parts.length) throw new DeskError(400, "a model call needs at least one usage part");
+    const table = priceTable();
+    let micros: number[];
     try {
-      micros = costMicroUsd(u.model, u, priceTable());
+      micros = call.parts.map((p) => costMicroUsd(p.model, p, table));
     } catch (err) {
       throw new DeskError(400, (err as Error).message);
     }
-    const cost = microsToUsd(micros);
-    return this.db.transaction(async (tx) => {
+    const total = micros.reduce((a, b) => a + b, 0);
+    const sum = (k: keyof TokenUsage) => call.parts.reduce((a, p) => a + p[k], 0);
+    const work = async (db: Tx) => {
       let lemmaId: string | null = null;
       if (attemptId !== null) {
-        const a = await this.openAttempt(tx, attemptId, agentId);
+        // The call already happened and was paid for: record it even if the attempt was closed
+        // meanwhile (lease expired, kill switch), as long as the attempt belongs to this agent.
+        const [a] = await db.select().from(attempts).where(eq(attempts.id, attemptId));
+        if (!a || a.agentId !== agentId) throw new DeskError(404, `no attempt ${attemptId} for ${agentId}`);
         lemmaId = a.lemmaId;
-        await tx
+        await db
           .update(attempts)
           .set({
-            tokensIn: sql`${attempts.tokensIn} + ${u.inputTokens}`,
-            tokensOut: sql`${attempts.tokensOut} + ${u.outputTokens}`,
-            cacheReadTokens: sql`${attempts.cacheReadTokens} + ${u.cacheReadTokens}`,
-            cacheWriteTokens: sql`${attempts.cacheWriteTokens} + ${u.cacheWriteTokens}`,
-            costUsd: sql`${attempts.costUsd} + ${cost}::numeric`,
+            tokensIn: sql`${attempts.tokensIn} + ${sum("inputTokens")}`,
+            tokensOut: sql`${attempts.tokensOut} + ${sum("outputTokens")}`,
+            cacheReadTokens: sql`${attempts.cacheReadTokens} + ${sum("cacheReadTokens")}`,
+            cacheWriteTokens: sql`${attempts.cacheWriteTokens} + ${sum("cacheWriteTokens")}`,
+            costUsd: sql`${attempts.costUsd} + ${microsToUsd(total)}::numeric`,
             turns: sql`${attempts.turns} + 1`,
           })
           .where(eq(attempts.id, attemptId));
       }
-      await tx.insert(modelCalls).values({
-        agentId,
-        attemptId,
-        purpose: u.purpose,
-        model: u.model,
-        tokensIn: u.inputTokens,
-        tokensOut: u.outputTokens,
-        cacheReadTokens: u.cacheReadTokens,
-        cacheWriteTokens: u.cacheWriteTokens,
-        costUsd: cost,
-        priceAsOf: PRICES_AS_OF,
-        requestId: u.requestId ?? null,
-        ts: this.now(),
-      });
-      await emit(tx, "model_call", {
+      for (const [i, p] of call.parts.entries()) {
+        await db.insert(modelCalls).values({
+          agentId,
+          attemptId,
+          purpose: call.purpose,
+          model: p.model,
+          part: i,
+          servedByFallback: p.servedByFallback ?? false,
+          tokensIn: p.inputTokens,
+          tokensOut: p.outputTokens,
+          cacheReadTokens: p.cacheReadTokens,
+          cacheWriteTokens: p.cacheWriteTokens,
+          costUsd: microsToUsd(micros[i]!),
+          priceAsOf: PRICES_AS_OF,
+          requestId: call.requestId ?? null,
+          ts: this.now(),
+        });
+      }
+      await emit(db, "model_call", {
         agentId,
         lemmaId,
-        payload: { attemptId, model: u.model, purpose: u.purpose, tokensIn: u.inputTokens, tokensOut: u.outputTokens, costUsd: cost, fallbackUsed: u.fallbackUsed ?? false },
+        payload: {
+          attemptId,
+          purpose: call.purpose,
+          models: call.parts.map((p) => p.model),
+          fallbackUsed: call.parts.some((p) => p.servedByFallback),
+          tokensIn: sum("inputTokens"),
+          tokensOut: sum("outputTokens"),
+          costUsd: microsToUsd(total),
+        },
       });
-      const [a] = attemptId === null ? [] : await tx.select({ c: attempts.costUsd }).from(attempts).where(eq(attempts.id, attemptId));
-      return { costUsd: cost, attemptCostUsd: a?.c ?? null };
-    });
+      const [a] = attemptId === null ? [] : await db.select({ c: attempts.costUsd }).from(attempts).where(eq(attempts.id, attemptId));
+      return { costUsd: microsToUsd(total), costMicros: total, attemptCostUsd: a?.c ?? null };
+    };
+    return tx ? work(tx) : this.db.transaction(work);
   }
 
-  /** Total model spend recorded for an agent since a time (used by the worker's run cap). */
+  /** Total model spend recorded for an agent since a time. */
   async spentSince(agentId: string, since: Date): Promise<string> {
     const [r] = await this.db.execute<{ s: string }>(
       sql`select coalesce(sum(cost_usd), 0)::numeric(14,6)::text as s from model_calls where agent_id = ${agentId} and ts >= ${since.toISOString()}::timestamptz`,
@@ -364,7 +535,7 @@ export class Desk {
     return r?.s ?? "0.000000";
   }
 
-  // ---------------------------------------------------------------- proofs and dependencies
+  // ================================================================ proofs and dependencies
 
   /**
    * Checked proofs a source imports, as the closure the judge needs (dependency order).
@@ -417,7 +588,13 @@ export class Desk {
     const [st] = await this.db.select().from(statements).where(eq(statements.id, lemmaId));
     if (st?.requiresMathlib && info.flavor !== "full") throw new DeskError(503, `${lemmaId} needs Mathlib but the judge runs the ${info.flavor} image`);
     const { deps, direct } = await this.resolveDeps(source, lemmaId);
-    return { verdict: await this.judge.check({ lemmaId, source, deps }), direct };
+    const verdict = await this.judge.check({ lemmaId, source, deps });
+    // A runner failure (Docker hiccup, host suspend) says nothing about the proof: never record it
+    // as the agent's failed attempt. The caller retries.
+    if (verdict.verdict === "fail" && verdict.reasons.length && verdict.reasons.every((r) => r.code === "runner_error")) {
+      throw new DeskError(503, `judge infrastructure error, retry: ${verdict.reasons[0]!.message.slice(0, 300)}`, "judge_unavailable");
+    }
+    return { verdict, direct };
   }
 
   /** The worker's lean_check tool: full judge run, no status change. */
@@ -441,7 +618,7 @@ export class Desk {
     return verdict;
   }
 
-  /** Official submission. Ends the attempt; on pass the lemma becomes "checked". */
+  /** Official submission. Ends the attempt; on pass the lemma becomes "checked" and is committed to lean/Proofs/. */
   async submit(attemptId: number, agentId: string, source: string, notes: string): Promise<JudgeVerdict> {
     const a = await this.openAttempt(this.db, attemptId, agentId);
     await this.requireLease(this.db, agentId, a.lemmaId);
@@ -457,36 +634,7 @@ export class Desk {
       throw err;
     }
     const now = this.now();
-    if (verdict.verdict === "pass") {
-      const fp = await this.fingerprint(a.lemmaId, direct);
-      await this.db.transaction(async (tx) => {
-        await tx
-          .update(lemmas)
-          .set({
-            status: "checked",
-            checkedAt: now,
-            checkedByAgent: agentId,
-            checkedSource: source,
-            checkedSourceSha256: sha256(source),
-            checkedCommit: this.repo.gitCommit(this.config.GIT_COMMIT),
-            checkedFingerprint: fp,
-            checkedProofPath: `lean/Proofs/${lemmaIdToLeanName(a.lemmaId)}.lean`,
-            proofImports: direct,
-            checkedVerdict: verdict,
-          })
-          .where(eq(lemmas.id, a.lemmaId));
-        await tx
-          .update(attempts)
-          .set({ result: "checked", endedAt: now, notes: notes.slice(0, 2000), submittedSource: source })
-          .where(eq(attempts.id, attemptId));
-        await tx.delete(leases).where(eq(leases.lemmaId, a.lemmaId));
-        await emit(tx, "checked", {
-          agentId,
-          lemmaId: a.lemmaId,
-          payload: { attemptId, axioms: verdict.axioms, checkers: verdict.checkers, reused: direct },
-        });
-      });
-    } else {
+    if (verdict.verdict !== "pass") {
       const errors = verdict.reasons.map((r) => `${r.code}: ${r.message}`).join("\n").slice(0, 4000);
       await this.endAttempt(attemptId, agentId, "failed", notes, errors, source);
       await emit(this.db, "judge_rejected", {
@@ -494,8 +642,67 @@ export class Desk {
         lemmaId: a.lemmaId,
         payload: { attemptId, reasons: verdict.reasons.map((r) => r.code), stage: verdict.stage },
       });
+      return verdict;
     }
+    const leanName = lemmaIdToLeanName(a.lemmaId);
+    const fp = await this.fingerprint(a.lemmaId, direct);
+    await this.db.transaction(async (tx) => {
+      await tx
+        .update(lemmas)
+        .set({
+          status: "checked",
+          checkedAt: now,
+          checkedByAgent: agentId,
+          checkedSource: source,
+          checkedSourceSha256: sha256(source),
+          checkedCommit: this.repo.gitCommit(this.config.GIT_COMMIT),
+          checkedFingerprint: fp,
+          checkedProofPath: `lean/Proofs/${leanName}.lean`,
+          proofImports: direct,
+          checkedVerdict: verdict,
+          handoffNote: null,
+          offeredTo: null,
+          offeredUntil: null,
+        })
+        .where(eq(lemmas.id, a.lemmaId));
+      await tx
+        .update(attempts)
+        .set({ result: "checked", endedAt: now, notes: notes.slice(0, 2000), submittedSource: source })
+        .where(eq(attempts.id, attemptId));
+      await tx.delete(leases).where(eq(leases.lemmaId, a.lemmaId));
+      await emit(tx, "checked", {
+        agentId,
+        lemmaId: a.lemmaId,
+        payload: { attemptId, axioms: verdict.axioms, checkers: verdict.checkers, reused: direct },
+      });
+      for (const r of direct) {
+        await tx.insert(reuses).values({ lemmaId: a.lemmaId, reusedLemmaId: r, agentId, ts: now });
+        await emit(tx, "lemma_reused", { agentId, lemmaId: a.lemmaId, payload: { reused: r } });
+      }
+    });
+    await this.commitProof(
+      a.lemmaId,
+      source,
+      `proof: ${leanName} checked\n\nLemma: ${a.lemmaId}\nAgent: ${agentId}\nAttempt: ${attemptId}\nSource sha256: ${sha256(source)}\n` +
+        `Checkers: judgecheck=${verdict.checkers.judgecheck}, leanchecker=${verdict.checkers.leanchecker}\nAxioms: ${verdict.axioms.join(", ") || "none"}`,
+    );
     return verdict;
+  }
+
+  /** Write + commit the proof; the commit that adds it becomes the lemma's pinned commit. */
+  private async commitProof(lemmaId: string, source: string, message: string): Promise<void> {
+    try {
+      const sha = await this.committer.publish(lemmaIdToLeanName(lemmaId), source, message);
+      if (sha) {
+        await this.db.transaction(async (tx) => {
+          await tx.update(lemmas).set({ checkedCommit: sha }).where(eq(lemmas.id, lemmaId));
+          await emit(tx, "proof_committed", { lemmaId, payload: { commit: sha, path: `lean/Proofs/${lemmaIdToLeanName(lemmaId)}.lean` } });
+        });
+      }
+    } catch (err) {
+      // The DB already says "checked"; reconcileProofs() at the next start repairs the file.
+      console.error(`commit of ${lemmaId} failed: ${(err as Error).message}`);
+    }
   }
 
   async endAttempt(
@@ -516,7 +723,278 @@ export class Desk {
     });
   }
 
-  // ---------------------------------------------------------------- re-checks
+  /** Make lean/Proofs/ match the DB (after a crash between the DB update and the commit). */
+  async reconcileProofs(): Promise<{ written: string[]; removed: string[] }> {
+    const rows = await this.db.select().from(lemmas).where(inArray(lemmas.status, ["checked", "recheck"]));
+    return this.committer.reconcile(new Map(rows.filter((l) => l.checkedSource).map((l) => [lemmaIdToLeanName(l.id), l.checkedSource!])));
+  }
+
+  // ================================================================ collaboration (section 6b)
+
+  private async programOfLemma(lemmaId: string): Promise<string | null> {
+    const [r] = await this.db
+      .select({ slug: programs.slug })
+      .from(statements)
+      .innerJoin(programs, eq(programs.id, statements.programId))
+      .where(eq(statements.id, lemmaId));
+    return r?.slug ?? null;
+  }
+
+  /** Internal agents seen recently (except `exclude`), with their camp (program of their latest lease). */
+  private async liveAgents(exclude: string): Promise<{ id: string; program: string | null; leased: boolean }[]> {
+    const since = new Date(this.now().getTime() - this.config.ACTIVE_AGENT_WINDOW_SECONDS * 1000).toISOString();
+    const rows = await this.db.execute<{ id: string; program: string | null; leased: boolean }>(sql`
+      select a.id,
+        (select p.slug from events e join statements s on s.id = e.lemma_id join programs p on p.id = s.program_id
+          where e.type = 'leased' and e.agent_id = a.id order by e.id desc limit 1) as program,
+        exists (select 1 from leases l where l.holder = a.id) as leased
+      from agents a
+      where a.kind = 'internal' and a.id <> ${exclude} and a.last_seen_at >= ${since}::timestamptz
+      order by a.id`);
+    return [...rows];
+  }
+
+  /** Failed checks/submissions in a row by this agent on this lemma, during its current lease. */
+  async consecutiveFailures(agentId: string, lemmaId: string): Promise<number> {
+    const rows = await this.db.execute<{ type: string; ok: boolean | null }>(sql`
+      select type, (payload->>'ok')::boolean as ok from events
+      where agent_id = ${agentId} and lemma_id = ${lemmaId}
+        and type in ('local_check', 'judge_rejected', 'checked')
+        and id > coalesce((select max(id) from events where type = 'leased' and agent_id = ${agentId} and lemma_id = ${lemmaId}), 0)
+      order by id desc`);
+    let n = 0;
+    for (const r of rows) {
+      if (r.type === "judge_rejected" || (r.type === "local_check" && r.ok === false)) n++;
+      else break;
+    }
+    return n;
+  }
+
+  /**
+   * Ask teammates (one question per lease, after ASK_AFTER_CONSECUTIVE_FAILURES failures in a row).
+   * Routed to up to 2 live agents: first same-program agents who checked a related lemma, then any
+   * agent of the same program (idle ones first).
+   */
+  async ask(agentId: string, attemptId: number, body: string, short: string): Promise<{ questionId: number; routedTo: string[] }> {
+    const a = await this.openAttempt(this.db, attemptId, agentId);
+    await this.requireLease(this.db, agentId, a.lemmaId);
+    const b = await this.budget(agentId);
+    if (b.killSwitch.on) throw new DeskError(429, "kill switch is on", "kill_switch");
+    const need = this.config.ASK_AFTER_CONSECUTIVE_FAILURES;
+    const fails = await this.consecutiveFailures(agentId, a.lemmaId);
+    if (fails < need) throw new DeskError(400, `questions are allowed after ${need} failed checks in a row (you have ${fails})`);
+    const now = this.now();
+    const hourAgo = new Date(now.getTime() - 3600_000).toISOString();
+    const lastHour = await countRows(this.db, sql`select count(*)::int as n from messages where from_agent = ${agentId} and kind = 'question' and ts >= ${hourAgo}::timestamptz`);
+    if (lastHour >= this.config.MAX_QUESTIONS_PER_HOUR) throw new DeskError(429, `question limit reached (${this.config.MAX_QUESTIONS_PER_HOUR} per hour)`);
+    const already = await countRows(this.db, sql`
+      select count(*)::int as n from messages m where m.from_agent = ${agentId} and m.lemma_id = ${a.lemmaId} and m.kind = 'question'
+        and m.ts >= (select max(ts) from events where type = 'leased' and agent_id = ${agentId} and lemma_id = ${a.lemmaId})`);
+    if (already) throw new DeskError(400, "you already asked a question during this lease");
+
+    const routedTo = await this.routeQuestion(agentId, a.lemmaId);
+    return this.db.transaction(async (tx) => {
+      const [m] = await tx
+        .insert(messages)
+        .values({
+          fromAgent: agentId,
+          toAgent: null,
+          lemmaId: a.lemmaId,
+          kind: "question",
+          body: body.slice(0, MESSAGE_LIMITS.body),
+          short: short.slice(0, MESSAGE_LIMITS.short),
+          routedTo,
+          ts: now,
+          expiresAt: new Date(now.getTime() + this.config.QUESTION_TTL_SECONDS * 1000),
+        })
+        .returning();
+      await emit(tx, "question_asked", { agentId, lemmaId: a.lemmaId, payload: { messageId: m!.id, routedTo, short: m!.short, attemptId } });
+      return { questionId: m!.id, routedTo };
+    });
+  }
+
+  async routeQuestion(askerId: string, lemmaId: string): Promise<string[]> {
+    const program = await this.programOfLemma(lemmaId);
+    const [target] = await this.db.select().from(statements).where(eq(statements.id, lemmaId));
+    const targetWords = words(target?.leanStatement ?? "");
+    const hourAgo = new Date(this.now().getTime() - 3600_000).toISOString();
+    const eligible: { id: string; program: string | null; leased: boolean }[] = [];
+    for (const c of await this.liveAgents(askerId)) {
+      const n = await countRows(this.db, sql`select count(*)::int as n from messages where from_agent = ${c.id} and kind in ('reply', 'hint') and ts >= ${hourAgo}::timestamptz`);
+      if (n >= this.config.MAX_REPLIES_PER_HOUR) continue;
+      if (!(await this.budget(c.id)).allowed) continue;
+      eligible.push(c);
+    }
+    // Tier 1: checked a related lemma in the same program.
+    const related = new Set<string>();
+    const checkedRows = await this.db
+      .select({ id: lemmas.id, by: lemmas.checkedByAgent, deps: statements.dependsOn, imports: lemmas.proofImports, text: statements.leanStatement, program: programs.slug })
+      .from(lemmas)
+      .innerJoin(statements, eq(statements.id, lemmas.id))
+      .innerJoin(programs, eq(programs.id, statements.programId))
+      .where(eq(lemmas.status, "checked"));
+    for (const r of checkedRows) {
+      if (!r.by || r.program !== program) continue;
+      const shared =
+        r.deps.some((d) => target?.dependsOn.includes(d)) ||
+        (target?.dependsOn ?? []).includes(r.id) ||
+        r.deps.includes(lemmaId) ||
+        r.imports.some((d) => target?.dependsOn.includes(d)) ||
+        jaccard(words(r.text), targetWords) >= 0.3;
+      if (shared) related.add(r.by);
+    }
+    const tier1 = eligible.filter((c) => related.has(c.id));
+    const tier2 = eligible.filter((c) => !related.has(c.id) && c.program === program).sort((x, y) => Number(x.leased) - Number(y.leased));
+    return [...tier1, ...tier2].slice(0, 2).map((c) => c.id);
+  }
+
+  /** Open questions routed to this agent that it has not answered yet. */
+  async inbox(agentId: string) {
+    const nowIso = this.now().toISOString();
+    const rows = await this.db.execute<{ id: number; from_agent: string; lemma_id: string; body: string; lean_statement: string; lean_name: string }>(sql`
+      select m.id, m.from_agent, m.lemma_id, m.body, s.lean_statement, s.lean_name
+      from messages m join statements s on s.id = m.lemma_id
+      where m.kind = 'question' and ${agentId} = any(m.routed_to) and m.expires_at > ${nowIso}::timestamptz
+        and not exists (select 1 from messages r where r.reply_to = m.id and r.from_agent = ${agentId})
+      order by m.id`);
+    const myChecked = await this.db
+      .select({ id: lemmas.id, source: lemmas.checkedSource })
+      .from(lemmas)
+      .where(and(eq(lemmas.status, "checked"), eq(lemmas.checkedByAgent, agentId)))
+      .limit(5);
+    return rows.map((r) => ({
+      questionId: r.id,
+      fromAgent: r.from_agent,
+      fromName: petIdentity(r.from_agent).displayName,
+      lemmaId: r.lemma_id,
+      leanName: r.lean_name,
+      leanStatement: r.lean_statement,
+      question: r.body,
+      myCheckedProofs: myChecked.map((c) => ({ lemmaId: c.id, source: c.source ?? "" })),
+    }));
+  }
+
+  /** Post a reply/hint to a routed question, recording the reply call's cost on the message. */
+  async reply(
+    agentId: string,
+    questionId: number,
+    r: { kind: "reply" | "hint"; body: string; short: string; parts: UsagePart[]; requestId?: string },
+  ): Promise<{ messageId: number; costUsd: string }> {
+    const [q] = await this.db.select().from(messages).where(eq(messages.id, questionId));
+    if (!q || q.kind !== "question" || !q.routedTo.includes(agentId)) throw new DeskError(404, "no such question routed to you");
+    const now = this.now();
+    const [dup] = await this.db.select({ id: messages.id }).from(messages).where(and(eq(messages.replyTo, questionId), eq(messages.fromAgent, agentId)));
+    if (dup) throw new DeskError(409, "already replied");
+    if (q.expiresAt && q.expiresAt < now) {
+      // The reply call already happened: its spend is recorded even though the reply arrives too late.
+      await this.recordUsage(null, agentId, { purpose: "reply", parts: r.parts, requestId: r.requestId });
+      throw new DeskError(410, "question expired");
+    }
+    return this.db.transaction(async (tx) => {
+      const cost = await this.recordUsage(null, agentId, { purpose: "reply", parts: r.parts, requestId: r.requestId }, tx);
+      const [m] = await tx
+        .insert(messages)
+        .values({
+          fromAgent: agentId,
+          toAgent: q.fromAgent,
+          lemmaId: q.lemmaId,
+          kind: r.kind,
+          body: r.body.slice(0, MESSAGE_LIMITS.body),
+          short: r.short.slice(0, MESSAGE_LIMITS.short),
+          costUsd: cost.costUsd,
+          replyTo: questionId,
+          ts: now,
+        })
+        .returning();
+      await emit(tx, "reply_posted", { agentId, lemmaId: q.lemmaId, payload: { messageId: m!.id, questionId, toAgent: q.fromAgent, short: m!.short, costUsd: cost.costUsd } });
+      return { messageId: m!.id, costUsd: cost.costUsd };
+    });
+  }
+
+  /** May this agent make a reply call now (rate limit + budget)? Checked by the worker before the call. */
+  async canReply(agentId: string): Promise<{ ok: boolean; reason?: string }> {
+    const hourAgo = new Date(this.now().getTime() - 3600_000).toISOString();
+    const n = await countRows(this.db, sql`select count(*)::int as n from messages where from_agent = ${agentId} and kind in ('reply', 'hint') and ts >= ${hourAgo}::timestamptz`);
+    if (n >= this.config.MAX_REPLIES_PER_HOUR) return { ok: false, reason: "reply_limit" };
+    const b = await this.budget(agentId);
+    return b.allowed ? { ok: true } : { ok: false, reason: b.reason ?? "budget" };
+  }
+
+  /** Replies/hints for this agent on this lemma not yet delivered; marks them delivered into `attemptId`. */
+  async takeReplies(agentId: string, lemmaId: string, attemptId: number | null): Promise<ReplyForAgent[]> {
+    return this.db.transaction(async (tx) => {
+      const rows = await tx
+        .select()
+        .from(messages)
+        .where(and(eq(messages.toAgent, agentId), eq(messages.lemmaId, lemmaId), inArray(messages.kind, ["reply", "hint"]), isNull(messages.deliveredAt)))
+        .orderBy(asc(messages.id))
+        .for("update", { skipLocked: true });
+      for (const m of rows) {
+        await tx.update(messages).set({ deliveredAt: this.now(), deliveredInAttempt: attemptId }).where(eq(messages.id, m.id));
+        await emit(tx, "reply_delivered", { agentId, lemmaId, payload: { messageId: m.id, questionId: m.replyTo, attemptId, fromAgent: m.fromAgent } });
+      }
+      return rows.map((m) => ({ id: m.id, fromAgent: m.fromAgent, fromName: petIdentity(m.fromAgent).displayName, kind: m.kind, body: m.body, questionId: m.replyTo }));
+    });
+  }
+
+  /** Does this agent have an unexpired, routed question on this lemma that no one has answered yet? */
+  async awaitingReply(agentId: string, lemmaId: string): Promise<boolean> {
+    const nowIso = this.now().toISOString();
+    const n = await countRows(this.db, sql`
+      select count(*)::int as n from messages m
+      where m.from_agent = ${agentId} and m.lemma_id = ${lemmaId} and m.kind = 'question'
+        and cardinality(m.routed_to) > 0 and m.expires_at > ${nowIso}::timestamptz
+        and not exists (select 1 from messages r where r.reply_to = m.id)`);
+    return n > 0;
+  }
+
+  /** Keyword search over checked lemmas (reuse, section 6b). */
+  async searchChecked(q: string) {
+    const terms = q.toLowerCase().split(/\s+/).filter((t) => t.length >= 2).slice(0, 8);
+    const rows = await this.db
+      .select({ id: lemmas.id, leanName: statements.leanName, title: statements.title, leanStatement: statements.leanStatement })
+      .from(lemmas)
+      .innerJoin(statements, eq(statements.id, lemmas.id))
+      .where(eq(lemmas.status, "checked"))
+      .orderBy(asc(lemmas.id));
+    return rows
+      .map((r) => {
+        const hay = `${r.id} ${r.leanName} ${r.title} ${r.leanStatement}`.toLowerCase();
+        return { ...r, score: terms.filter((t) => hay.includes(t)).length };
+      })
+      .filter((r) => r.score > 0)
+      .sort((a, b) => b.score - a.score)
+      .slice(0, 20)
+      .map(({ score: _s, ...r }) => ({ ...r, importAs: `Proofs.${r.leanName}`, theorem: `Proof.${r.leanName}` }));
+  }
+
+  /** Who works on what, for the agents' system prompt and the site. */
+  async colony(): Promise<ColonyState> {
+    const since = new Date(this.now().getTime() - this.config.ACTIVE_AGENT_WINDOW_SECONDS * 1000);
+    const live = await this.db.select().from(agents).where(and(eq(agents.kind, "internal"), gte(agents.lastSeenAt, since))).orderBy(asc(agents.id));
+    const held = await this.db.select().from(leases);
+    const result: ColonyState["agents"] = [];
+    for (const a of live) {
+      const lease = held.find((l) => l.holder === a.id);
+      const [last] = await this.db
+        .select({ type: events.type })
+        .from(events)
+        .where(and(eq(events.agentId, a.id), inArray(events.type, ["sleeping", "leased", "model_call"])))
+        .orderBy(desc(events.id))
+        .limit(1);
+      result.push({
+        id: a.id,
+        name: a.displayName,
+        program: lease ? await this.programOfLemma(lease.lemmaId) : null,
+        lemmaId: lease?.lemmaId ?? null,
+        status: last?.type === "sleeping" ? "sleeping" : lease ? "working" : "idle",
+      });
+    }
+    const recent = await this.db.select().from(lemmas).where(eq(lemmas.status, "checked")).orderBy(desc(lemmas.checkedAt)).limit(5);
+    return { agents: result, recentlyChecked: recent.map((l) => ({ id: l.id, agentId: l.checkedByAgent, at: l.checkedAt?.toISOString() ?? null })) };
+  }
+
+  // ================================================================ re-checks
 
   /** Mark checked lemmas whose fingerprint changed (statement, defs, toolchain or a dependency). */
   async recheckScan(): Promise<string[]> {
@@ -578,10 +1056,7 @@ export class Desk {
         if (verdict?.verdict === "pass") {
           const fp = await this.fingerprint(l.id, l.proofImports);
           await this.db.transaction(async (tx) => {
-            await tx
-              .update(lemmas)
-              .set({ status: "checked", checkedFingerprint: fp, checkedCommit: this.repo.gitCommit(this.config.GIT_COMMIT), checkedVerdict: verdict })
-              .where(eq(lemmas.id, l.id));
+            await tx.update(lemmas).set({ status: "checked", checkedFingerprint: fp, checkedVerdict: verdict }).where(eq(lemmas.id, l.id));
             await emit(tx, "recheck_passed", { lemmaId: l.id });
           });
           passed.push(l.id);
@@ -596,6 +1071,12 @@ export class Desk {
               payload: { reason, previousSource: l.checkedSource, previousSourceSha256: l.checkedSourceSha256, previousCommit: l.checkedCommit, previousAgent: l.checkedByAgent },
             });
           });
+          try {
+            const sha = await this.committer.withdraw(lemmaIdToLeanName(l.id), `proof: remove ${lemmaIdToLeanName(l.id)} (re-check failed: ${reason.slice(0, 200)})`);
+            if (sha) await emit(this.db, "proof_committed", { lemmaId: l.id, payload: { commit: sha, removed: true } });
+          } catch (err) {
+            console.error(`withdraw of ${l.id} failed: ${(err as Error).message}`);
+          }
           failed.push(l.id);
         }
       }

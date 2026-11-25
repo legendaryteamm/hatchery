@@ -13,6 +13,8 @@ const app = buildServer(desk);
 
 const synced = await desk.syncStatements();
 app.log.info(synced, "statements synced");
+const reconciled = await desk.reconcileProofs();
+if (reconciled.written.length || reconciled.removed.length) app.log.warn(reconciled, "lean/Proofs reconciled with the database");
 
 // Scheduler: expire leases every 30 s; re-check scan + re-checks on start and every RECHECK_INTERVAL_SECONDS.
 setInterval(() => desk.expireLeases().catch((err) => app.log.error(err, "expireLeases")), 30_000);

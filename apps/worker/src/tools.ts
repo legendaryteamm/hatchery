@@ -1,4 +1,4 @@
-import type { JudgeVerdict } from "@hatchery/shared";
+import { MESSAGE_LIMITS, type JudgeVerdict } from "@hatchery/shared";
 import { DeskHttpError, type DeskClient } from "./desk-client.ts";
 import type { ToolDef } from "./provider.ts";
 
@@ -29,9 +29,22 @@ export const TOOLS: ToolDef[] = [
     inputSchema: obj({ query: { type: "string", description: "2-100 printable ASCII characters." } }),
   },
   {
+    name: "search_checked",
+    description: "Keyword search over lemmas the colony has already CHECKED. Reuse them with `import Proofs.<LeanName>` and `Proof.<LeanName>`.",
+    inputSchema: obj({ query: { type: "string", description: "Keywords, e.g. 'length append'." } }),
+  },
+  {
     name: "read_file",
     description: "Read a trusted file: Defs/<...>.lean, Statements/<L>.lean, or Proofs/<L>.lean for a checked lemma.",
     inputSchema: obj({ path: { type: "string" } }),
+  },
+  {
+    name: "ask_teammates",
+    description: `Ask up to two teammates for help. Allowed once per lemma, only after 3 failed checks in a row. Say what you tried and exactly where it broke. Their answer appears in a later turn or your next attempt.`,
+    inputSchema: obj({
+      question: { type: "string", description: `What you tried and where it broke (max ${MESSAGE_LIMITS.body} characters).` },
+      short: { type: "string", description: `A speech-bubble summary (max ${MESSAGE_LIMITS.short} characters).` },
+    }),
   },
 ];
 
@@ -43,7 +56,7 @@ export function summarizeVerdict(v: JudgeVerdict): string {
 }
 
 export type ToolOutcome =
-  | { kind: "result"; content: string; isError: boolean; checkedSource?: string; lastErrors?: string }
+  | { kind: "result"; content: string; isError: boolean; checkedSource?: string; lastErrors?: string; asked?: boolean }
   | { kind: "submitted"; verdict: JudgeVerdict };
 
 export async function runTool(desk: DeskClient, attemptId: number, name: string, input: unknown): Promise<ToolOutcome> {
@@ -60,15 +73,33 @@ export async function runTool(desk: DeskClient, attemptId: number, name: string,
         return { kind: "submitted", verdict: await desk.submit(attemptId, str("source"), str("notes")) };
       case "search_library":
         return { kind: "result", content: await desk.search(str("query")), isError: false };
+      case "search_checked": {
+        const found = await desk.searchChecked(str("query"));
+        return { kind: "result", content: found.length ? JSON.stringify(found, null, 1) : "(no checked lemma matches)", isError: false };
+      }
       case "read_file":
         return { kind: "result", content: await desk.readFile(str("path")), isError: false };
+      case "ask_teammates": {
+        const q = await desk.ask(attemptId, str("question").slice(0, MESSAGE_LIMITS.body), (str("short") || str("question")).slice(0, MESSAGE_LIMITS.short));
+        return {
+          kind: "result",
+          isError: false,
+          asked: true,
+          content: q.routedTo.length
+            ? `Question sent to ${q.routedTo.length} teammate(s). Their answer will appear in a later turn or your next attempt. Keep working meanwhile.`
+            : "No teammate is available right now. Keep working.",
+        };
+      }
       default:
         return { kind: "result", content: `unknown tool ${name}`, isError: true };
     }
   } catch (err) {
-    // 4xx from the desk is information for the model (bad import, bad path); anything else is ours.
+    // 4xx from the desk is information for the model (bad import, bad path, limits); anything else is ours.
     if (err instanceof DeskHttpError && err.status >= 400 && err.status < 500 && err.status !== 409) {
       return { kind: "result", content: `error: ${err.message}`, isError: true };
+    }
+    if (err instanceof DeskHttpError && err.status === 503 && err.reason === "judge_unavailable" && name === "lean_check") {
+      return { kind: "result", content: "The judge had an infrastructure error (not your proof). Run lean_check again.", isError: true };
     }
     throw err;
   }

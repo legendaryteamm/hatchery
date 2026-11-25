@@ -6,6 +6,7 @@
   "type": "module",
   "scripts": {
     "start": "tsx src/main.ts",
+    "fleet": "tsx src/fleet.ts",
     "test": "vitest run",
     "typecheck": "tsc -p tsconfig.json"
   },

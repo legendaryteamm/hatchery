@@ -17,7 +17,8 @@ async function setup(opts: Parameters<typeof makeDesk>[0] = {}) {
 }
 const eventTypes = async (db: Awaited<ReturnType<typeof setup>>["db"]) =>
   (await db.select({ t: events.type }).from(events).orderBy(events.id)).map((r) => r.t);
-const usage = { model: "claude-opus-5-5", purpose: "prove", inputTokens: 1000, outputTokens: 500, cacheReadTokens: 2000, cacheWriteTokens: 100 };
+const part = { model: "claude-opus-5-5", inputTokens: 1000, outputTokens: 500, cacheReadTokens: 2000, cacheWriteTokens: 100 };
+const usage = { purpose: "prove" as const, parts: [part] };
 
 describe("statements", () => {
   it("syncs the 5 core seed statements as approved, open lemmas (fixtures excluded)", async () => {
@@ -53,6 +54,7 @@ describe("leases and attempts", () => {
       "statement_synced", "statement_synced", "statement_synced", "statement_synced", "statement_synced",
       "agent_registered", "leased", "attempt_started", "model_call", "model_call", "submitted", "checked",
     ]);
+    expect(await desk.budget("agent-1")).toMatchObject({ allowed: true, agentSpentUsd: "0.029800", globalSpentUsd: "0.029800" });
   });
 
   it("refuses unpriced models and work without a lease", async () => {
@@ -61,7 +63,7 @@ describe("leases and attempts", () => {
     await expect(desk.startAttempt("agent-1", "L-core-001")).rejects.toThrow(/no active lease/);
     await desk.lease("agent-1");
     const id = await desk.startAttempt("agent-1", "L-core-001");
-    await expect(desk.recordUsage(id, "agent-1", { ...usage, model: "mystery" })).rejects.toThrow(/no price/);
+    await expect(desk.recordUsage(id, "agent-1", { purpose: "prove", parts: [{ ...part, model: "mystery" }] })).rejects.toThrow(/no price/);
     await expect(desk.lease("agent-1")).rejects.toThrow(/already holds/);
   });
 
@@ -91,7 +93,7 @@ describe("leases and attempts", () => {
 
   it("expired leases are recovered and their open attempt is closed as timeout", async () => {
     let t = new Date("2026-01-01T00:00:00Z");
-    const { desk, db } = await setup({ now: () => t, config: { LEASE_TTL_MINUTES: "5" } });
+    const { desk, db } = await setup({ now: () => t, config: { LEASE_TTL_SECONDS: "300" } });
     await desk.registerAgent("agent-1", "claude-opus-5-5");
     await desk.lease("agent-1");
     const id = await desk.startAttempt("agent-1", "L-core-001");
@@ -101,6 +103,9 @@ describe("leases and attempts", () => {
     expect(await desk.expireLeases()).toEqual(["L-core-001"]);
     expect((await db.select().from(attempts).where(eq(attempts.id, id)))[0]!.result).toBe("timeout");
     await expect(desk.heartbeat("agent-1", "L-core-001")).rejects.toBeInstanceOf(DeskError);
+    // A model call that was in flight when the lease expired is still recorded (it was paid for).
+    await desk.recordUsage(id, "agent-1", usage);
+    expect((await db.select().from(attempts).where(eq(attempts.id, id)))[0]!.costUsd).toBe("0.014900");
     expect((await db.select().from(lemmas).where(eq(lemmas.id, "L-core-001")))[0]!.status).toBe("open");
   });
 

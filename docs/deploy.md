@@ -60,15 +60,20 @@ The desk also refuses all leases and checks when the judge image is **stale**: t
 desk's checkout. `GET /health` on the desk shows `judge.fresh`. After changing statements or
 definitions, rebuild the runner image and restart the judge.
 
+## The desk commits accepted proofs
+
+With `PROOF_COMMIT_MODE=commit` (default) the desk writes `lean/Proofs/<L>.lean` and commits only
+that file in the checkout it runs from, as "Hatchery Judge". It needs:
+- the checkout mounted read-write (compose mounts `.` at `/repo`), and `git` (in the desk image);
+- to run as the checkout's owner: set `HATCHERY_UID` / `HATCHERY_GID` (`id -u`, `id -g`) in `.env`.
+
+It never pushes. Pushing the bot's commits (and from which account) is a Phase 6 decision.
+
 ## Checked proofs and commits
 
-Every checked proof records the exact source, its sha256, the commit of the desk's checkout
-(`GIT_COMMIT`, or `git rev-parse HEAD` with `+dirty` when `lean/` has uncommitted changes), and a
-fingerprint of everything it depends on. In Docker there is no `.git`, so pass it explicitly:
-
-```bash
-GIT_COMMIT=$(git rev-parse HEAD) docker compose up -d desk
-```
+Every checked proof records the exact source, its sha256, the commit that added it to
+`lean/Proofs/` (with `PROOF_COMMIT_MODE=commit`; otherwise the checkout's commit, `GIT_COMMIT` or
+`git rev-parse HEAD` with `+dirty`), and a fingerprint of everything it depends on.
 
 When a statement, a definition, the toolchain/Mathlib pin, or an imported checked proof changes,
 the desk marks the lemma and everything that imports it as `recheck` (on start and every

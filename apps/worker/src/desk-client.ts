@@ -1,4 +1,5 @@
-import type { JudgeVerdict, TokenUsage } from "@hatchery/shared";
+import type { JudgeVerdict, SleepReason } from "@hatchery/shared";
+import type { UsagePart } from "./provider.ts";
 
 /** Mirrors apps/desk LeaseContext (kept structural to avoid a runtime dependency on the desk). */
 export interface LeaseContext {
@@ -13,37 +14,100 @@ export interface LeaseContext {
   checkedLemmas: { id: string; leanName: string; leanStatement: string }[];
   myFailedAttempts: number;
   maxAttemptsPerLemma: number;
+  handoffNote: string | null;
+  offeredToMe: boolean;
+}
+
+export interface Budget {
+  allowed: boolean;
+  reason: SleepReason | null;
+  agentSpentUsd: string;
+  perAgentCapUsd: string;
+}
+
+export interface InboxQuestion {
+  questionId: number;
+  fromAgent: string;
+  fromName: string;
+  lemmaId: string;
+  leanName: string;
+  leanStatement: string;
+  question: string;
+  myCheckedProofs: { lemmaId: string; source: string }[];
+}
+
+export interface Reply {
+  id: number;
+  fromAgent: string;
+  fromName: string;
+  kind: string;
+  body: string;
+  questionId: number | null;
+}
+
+export interface Colony {
+  agents: { id: string; name: string; program: string | null; lemmaId: string | null; status: string }[];
+  recentlyChecked: { id: string; agentId: string | null; at: string | null }[];
 }
 
 export class DeskHttpError extends Error {
-  constructor(readonly status: number, message: string) {
+  constructor(readonly status: number, message: string, readonly reason?: string) {
     super(message);
   }
 }
 
-export class DeskClient {
-  constructor(private baseUrl: string, private token: string, readonly agentId: string) {}
+export interface DeskTimeouts {
+  /** Ordinary desk requests. */
+  requestMs: number;
+  /** Requests that run the judge (lean_check, submit): two sandbox stages plus queueing. */
+  judgeMs: number;
+}
+export const DEFAULT_DESK_TIMEOUTS: DeskTimeouts = { requestMs: 60_000, judgeMs: 15 * 60_000 };
 
-  private async req<T>(method: string, path: string, body?: unknown): Promise<T | null> {
+export class DeskClient {
+  constructor(
+    private baseUrl: string,
+    private token: string,
+    readonly agentId: string,
+    private timeouts: DeskTimeouts = DEFAULT_DESK_TIMEOUTS,
+  ) {}
+
+  private async req<T>(method: string, path: string, body?: unknown, timeoutMs = this.timeouts.requestMs): Promise<T | null> {
     const res = await fetch(`${this.baseUrl}${path}`, {
       method,
       headers: { authorization: `Bearer ${this.token}`, ...(body ? { "content-type": "application/json" } : {}) },
       body: body ? JSON.stringify(body) : undefined,
+      signal: AbortSignal.timeout(timeoutMs), // never wait forever on the desk
     });
     if (res.status === 204) return null;
     const text = await res.text();
     if (!res.ok) {
       let msg = text;
+      let reason: string | undefined;
       try {
-        msg = (JSON.parse(text) as { error?: string }).error ?? text;
+        const j = JSON.parse(text) as { error?: string; reason?: string };
+        msg = j.error ?? text;
+        reason = j.reason;
       } catch {}
-      throw new DeskHttpError(res.status, msg.slice(0, 1000));
+      throw new DeskHttpError(res.status, msg.slice(0, 1000), reason);
     }
     return JSON.parse(text) as T;
+  }
+  private q(extra: Record<string, string | number> = {}) {
+    return new URLSearchParams({ agentId: this.agentId, ...Object.fromEntries(Object.entries(extra).map(([k, v]) => [k, String(v)])) }).toString();
   }
 
   register(model: string) {
     return this.req("POST", "/internal/agents/register", { agentId: this.agentId, model });
+  }
+  async budget(): Promise<Budget> {
+    return (await this.req<Budget>("GET", `/internal/budget?${this.q()}`))!;
+  }
+  sleep(reason: SleepReason) {
+    return this.req("POST", "/internal/sleep", { agentId: this.agentId, reason });
+  }
+  async colony(): Promise<Colony> {
+    return (await this.req<Colony>("GET", `/internal/colony?${this.q()}`))!;
   }
   lease(program?: string) {
     return this.req<LeaseContext>("POST", "/internal/lease", { agentId: this.agentId, program });
@@ -51,32 +115,61 @@ export class DeskClient {
   heartbeat(lemmaId: string) {
     return this.req("POST", "/internal/lease/heartbeat", { agentId: this.agentId, lemmaId });
   }
-  release(lemmaId: string, notes: string, abandon: boolean) {
-    return this.req("POST", "/internal/lease/release", { agentId: this.agentId, lemmaId, notes, abandon });
+  release(lemmaId: string, notes: string, abandon: boolean, handoff?: { body: string; short: string; note: string }) {
+    return this.req<{ offeredTo: string | null }>("POST", "/internal/lease/release", { agentId: this.agentId, lemmaId, notes, abandon, handoff });
   }
   async startAttempt(lemmaId: string): Promise<number> {
     return (await this.req<{ attemptId: number }>("POST", "/internal/attempts", { agentId: this.agentId, lemmaId }))!.attemptId;
   }
-  recordUsage(attemptId: number, u: TokenUsage & { model: string; requestId?: string; fallbackUsed?: boolean }) {
-    return this.req<{ costUsd: string; attemptCostUsd: string }>("POST", `/internal/attempts/${attemptId}/usage`, { agentId: this.agentId, purpose: "prove", ...u });
+  recordUsage(attemptId: number, call: { parts: UsagePart[]; requestId?: string }) {
+    return this.req<{ costUsd: string; attemptCostUsd: string }>("POST", `/internal/attempts/${attemptId}/usage`, { agentId: this.agentId, purpose: "prove", ...call });
   }
   async check(attemptId: number, source: string): Promise<JudgeVerdict> {
-    return (await this.req<JudgeVerdict>("POST", `/internal/attempts/${attemptId}/check`, { agentId: this.agentId, source }))!;
+    return (await this.req<JudgeVerdict>("POST", `/internal/attempts/${attemptId}/check`, { agentId: this.agentId, source }, this.timeouts.judgeMs))!;
   }
-  async submit(attemptId: number, source: string, notes: string): Promise<JudgeVerdict> {
-    return (await this.req<JudgeVerdict>("POST", `/internal/attempts/${attemptId}/submit`, { agentId: this.agentId, source, notes }))!;
+  /** Submit; a judge infrastructure error (503) is retried a few times and is never the agent's failure. */
+  async submit(attemptId: number, source: string, notes: string, retries = 3, backoffMs = 2000): Promise<JudgeVerdict> {
+    for (let i = 0; ; i++) {
+      try {
+        return (await this.req<JudgeVerdict>("POST", `/internal/attempts/${attemptId}/submit`, { agentId: this.agentId, source, notes }, this.timeouts.judgeMs))!;
+      } catch (err) {
+        if (!(err instanceof DeskHttpError && err.status === 503 && err.reason === "judge_unavailable") || i >= retries) throw err;
+        await new Promise((r) => setTimeout(r, backoffMs * (i + 1)));
+      }
+    }
   }
   finish(attemptId: number, result: "failed" | "timeout", notes: string, judgeErrors: string | null) {
     return this.req("POST", `/internal/attempts/${attemptId}/finish`, { agentId: this.agentId, result, notes, judgeErrors });
   }
+  async ask(attemptId: number, body: string, short: string): Promise<{ questionId: number; routedTo: string[] }> {
+    return (await this.req<{ questionId: number; routedTo: string[] }>("POST", `/internal/attempts/${attemptId}/ask`, { agentId: this.agentId, body, short }))!;
+  }
+  async inbox(): Promise<InboxQuestion[]> {
+    return (await this.req<InboxQuestion[]>("GET", `/internal/inbox?${this.q()}`))!;
+  }
+  async canReply(): Promise<{ ok: boolean; reason?: string }> {
+    return (await this.req<{ ok: boolean; reason?: string }>("GET", `/internal/can-reply?${this.q()}`))!;
+  }
+  reply(questionId: number, r: { kind: "reply" | "hint"; body: string; short: string; parts: UsagePart[]; requestId?: string }) {
+    return this.req<{ messageId: number; costUsd: string }>("POST", `/internal/questions/${questionId}/reply`, { agentId: this.agentId, ...r });
+  }
+  async takeReplies(lemmaId: string, attemptId: number | null): Promise<Reply[]> {
+    return (await this.req<Reply[]>("POST", "/internal/replies/take", { agentId: this.agentId, lemmaId, ...(attemptId ? { attemptId } : {}) }))!;
+  }
+  async awaitingReply(lemmaId: string): Promise<boolean> {
+    return (await this.req<{ awaiting: boolean }>("GET", `/internal/awaiting-reply?${this.q({ lemmaId })}`))!.awaiting;
+  }
   async spentSince(since: Date): Promise<number> {
-    const r = await this.req<{ spentUsd: string }>("GET", `/internal/spent?agentId=${this.agentId}&since=${encodeURIComponent(since.toISOString())}`);
+    const r = await this.req<{ spentUsd: string }>("GET", `/internal/spent?${this.q({ since: since.toISOString() })}`);
     return Number(r!.spentUsd);
   }
   async readFile(path: string): Promise<string> {
-    return (await this.req<{ content: string }>("GET", `/internal/files?path=${encodeURIComponent(path)}`))!.content;
+    return (await this.req<{ content: string }>("GET", `/internal/files?${this.q({ path })}`))!.content;
   }
   async search(q: string): Promise<string> {
-    return (await this.req<{ results: string }>("GET", `/internal/search?q=${encodeURIComponent(q)}`))!.results;
+    return (await this.req<{ results: string }>("GET", `/internal/search?${this.q({ q })}`))!.results;
+  }
+  async searchChecked(q: string): Promise<unknown[]> {
+    return (await this.req<unknown[]>("GET", `/internal/checked?${this.q({ q })}`))!;
   }
 }

@@ -18,4 +18,9 @@ Questions for the maintainer. Each has the default chosen for now.
 | 12 | `leanchecker` uses the same C++ kernel as Lean. The toolchain also ships `nanoda_bin` (an independent type checker written in Rust) and `leanexport`. Add it as a third, kernel-independent checker? | Not yet; cheap to add to the check container. | 2+ |
 | 13 | Agents default to `AGENT_EFFORT=high` and Anthropic's server-side refusal fallback on. Model choice is `AGENT_MODEL` (`.env.example` suggests `claude-opus-5-5`). | As stated; all configurable. | 1 |
 | 14 | Lease selection gives each agent the least-attempted open lemma first. An agent never re-leases a lemma it abandoned. A lemma becomes `abandoned` (graveyard) after `LEMMA_ABANDON_AFTER_ATTEMPTS`=12 failed attempts across all agents. | As stated. | 1 |
-| 15 | Checked proofs live in the DB (pinned). Should the desk also commit them to `lean/Proofs/` automatically (bot commit), or stay manual (`pnpm desk export-proofs`)? | Manual for now. | 6 |
+| 15 | ~~Commit checked proofs automatically?~~ **Answered: yes.** The desk commits each accepted proof (only that file) as "Hatchery Judge"; that commit is the pinned commit. | Done in Phase 2. It never pushes. | 2 |
+| 16 | Pantry: `topup_transfer` (wallet → API billing) is a transfer, not consumption, so it is not subtracted from food; API spend comes from `model_calls`. | As stated. Phase 5 materializes ledger rows. | 2 / 5 |
+| 17 | Handoff notes are composed from the agent's own record (attempt notes, last errors, last checked file) instead of an extra model call. | No extra tokens. | 2 |
+| 18 | Question routing: "related" = shared `depends_on`, imports, or statement word overlap ≥ 0.3; "same program" = the program of the agent's latest lease. Agents that never leased are not routed to. | As stated. | 2 |
+| 19 | Who pushes the bot's proof commits, and from which account? | Nobody yet: local commits only (HANDOFF.md). | 6 |
+| 20 | Per-agent cap: an agent may overshoot by the one call that crosses it (the cost is unknown before the call). Alternative: refuse a call whose worst-case cost (max_tokens) would cross the cap. | Overshoot ≤ 1 call. | 2 |

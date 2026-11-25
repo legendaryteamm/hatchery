@@ -1,5 +1,5 @@
 import Anthropic from "@anthropic-ai/sdk";
-import type { Block, ChatMessage, ModelProvider, ModelTurn, StopReason, ToolDef } from "./provider.ts";
+import type { Block, CallOptions, ChatMessage, ModelProvider, ModelTurn, StopReason, ToolDef, UsagePart } from "./provider.ts";
 
 export interface AnthropicOptions {
   model: string;
@@ -7,6 +7,37 @@ export interface AnthropicOptions {
   effort: "low" | "medium" | "high" | "xhigh" | "max";
   /** Server-side refusal fallback (on by default; set AGENT_REFUSAL_FALLBACK=0 to turn off). */
   refusalFallback: boolean;
+}
+
+/**
+ * Split a response's usage into one part per model that served it. With a refusal fallback,
+ * `usage.iterations` lists each part with its own model and tokens (a `message` entry with a null
+ * model ran on the requested model). Without iterations, the whole call is one part.
+ */
+export function usageParts(response: Pick<Anthropic.Beta.BetaMessage, "usage" | "model">, requestedModel: string): UsagePart[] {
+  const it = response.usage.iterations ?? [];
+  const parts: UsagePart[] = [];
+  for (const i of it) {
+    if (i.type !== "message" && i.type !== "fallback_message") continue; // compaction/advisor: not used by this harness
+    parts.push({
+      model: i.model ?? requestedModel,
+      inputTokens: i.input_tokens,
+      outputTokens: i.output_tokens,
+      cacheReadTokens: i.cache_read_input_tokens ?? 0,
+      cacheWriteTokens: i.cache_creation_input_tokens ?? 0,
+      servedByFallback: i.type === "fallback_message",
+    });
+  }
+  if (parts.length) return parts;
+  const u = response.usage;
+  return [{
+    model: response.model,
+    inputTokens: u.input_tokens,
+    outputTokens: u.output_tokens,
+    cacheReadTokens: u.cache_read_input_tokens ?? 0,
+    cacheWriteTokens: u.cache_creation_input_tokens ?? 0,
+    servedByFallback: false,
+  }];
 }
 
 export class AnthropicProvider implements ModelProvider {
@@ -17,7 +48,7 @@ export class AnthropicProvider implements ModelProvider {
     return this.opts.model;
   }
 
-  async call(req: { system: string; messages: ChatMessage[]; tools: ToolDef[] }): Promise<ModelTurn> {
+  async call(req: { system: string; messages: ChatMessage[]; tools: ToolDef[] }, callOpts: CallOptions = {}): Promise<ModelTurn> {
     const tools: Anthropic.Beta.BetaTool[] = req.tools.map((t) => ({
       name: t.name,
       description: t.description,
@@ -26,14 +57,14 @@ export class AnthropicProvider implements ModelProvider {
     }));
     const params: Anthropic.Beta.MessageCreateParamsNonStreaming = {
       model: this.opts.model,
-      max_tokens: this.opts.maxTokens,
+      max_tokens: callOpts.maxTokens ?? this.opts.maxTokens,
       // Stable prefix (tools + system) is cached; thinking is adaptive by default on current models.
       cache_control: { type: "ephemeral" },
       system: req.system,
-      tools,
-      output_config: { effort: this.opts.effort },
+      output_config: { effort: callOpts.effort ?? this.opts.effort },
       messages: req.messages.map(toParam),
     };
+    if (tools.length) params.tools = tools;
     if (this.opts.refusalFallback) {
       params.betas = ["server-side-fallback-2026-07-01"];
       params.fallbacks = "default";
@@ -45,20 +76,11 @@ export class AnthropicProvider implements ModelProvider {
       if (b.type === "tool_use") return { type: "tool_use", id: b.id, name: b.name, input: b.input, raw: b };
       return { type: "raw", value: b };
     });
-    const u = response.usage;
-    const iterations = (u as { iterations?: { type?: string }[] }).iterations ?? [];
     return {
       content,
       stopReason: (["end_turn", "tool_use", "max_tokens", "refusal"].includes(response.stop_reason ?? "") ? response.stop_reason : "other") as StopReason,
-      usage: {
-        inputTokens: u.input_tokens,
-        outputTokens: u.output_tokens,
-        cacheReadTokens: u.cache_read_input_tokens ?? 0,
-        cacheWriteTokens: u.cache_creation_input_tokens ?? 0,
-      },
-      model: response.model,
+      parts: usageParts(response, this.opts.model),
       requestId: (response as { _request_id?: string | null })._request_id ?? undefined,
-      fallbackUsed: iterations.some((i) => i.type === "fallback_message"),
     };
   }
 }

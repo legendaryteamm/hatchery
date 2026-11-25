@@ -11,4 +11,5 @@ COPY apps/worker/src apps/worker/src
 ENV NODE_ENV=production
 WORKDIR /app/apps/worker
 USER node
-CMD ["node", "--import", "tsx", "src/main.ts"]
+# One process per agent; the launcher starts WORKER_COUNT of them.
+CMD ["node", "--import", "tsx", "src/fleet.ts"]
