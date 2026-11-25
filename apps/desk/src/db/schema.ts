@@ -33,6 +33,9 @@ export const outflowKind = pgEnum("outflow_kind", ["api_spend", "topup_transfer"
 export const programs = pgTable("programs", {
   id: serial("id").primaryKey(),
   slug: text("slug").notNull().unique(),
+  /** ext: short prefix for lemma ids, e.g. "circ" in L-circ-014. */
+  idPrefix: text("id_prefix").notNull().default(""),
+  sort: integer("sort").notNull().default(0),
   title: text("title").notNull(),
   description: text("description").notNull(),
   status: programStatus("status").notNull().default("active"),
@@ -49,7 +52,94 @@ export const statements = pgTable("statements", {
   approvedBy: text("approved_by"),
   dependsOn: text("depends_on").array().notNull().default(sql`'{}'::text[]`),
   requiresMathlib: boolean("requires_mathlib").notNull().default(false), // ext: gate (docs/deploy.md)
-  fileSha256: text("file_sha256").notNull(), // ext: hash of lean/Statements/<L>.lean
+  fileSha256: text("file_sha256").notNull(), // ext: sha256 of `source`
+  // ext (Phase 3)
+  /** The whole statement file `Statements/<L>.lean`: what reviewers approve and the judge receives. */
+  source: text("source").notNull().default(""),
+  origin: text("origin").notNull().default("repo"), // repo | decomposer
+  /** Definition modules the statement imports (`Defs.*`). It cannot be approved while any is a draft. */
+  defImports: text("def_imports").array().notNull().default(sql`'{}'::text[]`),
+  /** Result of the automatic statement check (null = not checked yet). */
+  check: jsonb("check"),
+  rationale: text("rationale").notNull().default(""),
+  rejectReason: text("reject_reason"),
+  /** Set when proposed as a split of another lemma. */
+  parentId: text("parent_id"),
+  proposedAt: ts("proposed_at"),
+  approvedAt: ts("approved_at"),
+});
+
+export const definitionStatus = pgEnum("definition_status", ["draft", "approved", "changes_requested"]);
+export const reviewerRole = pgEnum("reviewer_role", ["advisor", "maintainer"]);
+export const reviewDecision = pgEnum("review_decision", ["approve", "request_changes", "reject", "comment"]);
+
+/**
+ * ext (Phase 3): one row per definition module (`lean/Defs/.../*.lean`). It is a DRAFT unless an
+ * advisor approved exactly the current source (reviewed_sha256 = source_sha256) and every
+ * definition module it imports is approved too.
+ */
+export const definitions = pgTable("definitions", {
+  id: text("id").primaryKey(), // module name, e.g. Defs.Core.Circuit
+  path: text("path").notNull(),
+  title: text("title").notNull(),
+  summary: text("summary").notNull(),
+  source: text("source").notNull(),
+  sourceSha256: text("source_sha256").notNull(),
+  imports: text("imports").array().notNull().default(sql`'{}'::text[]`),
+  requiresMathlib: boolean("requires_mathlib").notNull().default(false),
+  status: definitionStatus("status").notNull().default("draft"),
+  reviewedSha256: text("reviewed_sha256"),
+  reviewedBy: integer("reviewed_by"),
+  reviewedAt: ts("reviewed_at"),
+  updatedAt: ts("updated_at").notNull().defaultNow(),
+  removed: boolean("removed").notNull().default(false),
+});
+
+/** ext (Phase 3): people who review definitions and statements (no developer account needed). */
+export const reviewers = pgTable("reviewers", {
+  id: serial("id").primaryKey(),
+  name: text("name").notNull(),
+  role: reviewerRole("role").notNull(),
+  createdAt: ts("created_at").notNull().defaultNow(),
+  disabledAt: ts("disabled_at"),
+  inviteTokenHash: text("invite_token_hash").unique(),
+  inviteExpiresAt: ts("invite_expires_at"),
+  inviteUsedAt: ts("invite_used_at"),
+});
+
+export const reviewerSessions = pgTable("reviewer_sessions", {
+  tokenHash: text("token_hash").primaryKey(),
+  reviewerId: integer("reviewer_id").notNull().references(() => reviewers.id),
+  createdAt: ts("created_at").notNull().defaultNow(),
+  expiresAt: ts("expires_at").notNull(),
+});
+
+/** ext (Phase 3): every review decision, bound to the exact source the reviewer saw. */
+export const reviews = pgTable(
+  "reviews",
+  {
+    id: serial("id").primaryKey(),
+    ts: ts("ts").notNull().defaultNow(),
+    targetKind: text("target_kind").notNull(), // definition | statement
+    targetId: text("target_id").notNull(),
+    targetSha256: text("target_sha256").notNull(),
+    reviewerId: integer("reviewer_id").notNull().references(() => reviewers.id),
+    decision: reviewDecision("decision").notNull(),
+    comment: text("comment").notNull().default(""),
+  },
+  (t) => [index("reviews_target_idx").on(t.targetKind, t.targetId)],
+);
+
+/** ext (Phase 3, section 6b "split request"): an agent asks the decomposer to split its lemma. */
+export const splitRequests = pgTable("split_requests", {
+  id: serial("id").primaryKey(),
+  ts: ts("ts").notNull().defaultNow(),
+  agentId: text("agent_id").notNull(),
+  lemmaId: text("lemma_id").notNull(),
+  reason: text("reason").notNull(),
+  status: text("status").notNull().default("open"), // open | done
+  handledAt: ts("handled_at"),
+  proposals: text("proposals").array().notNull().default(sql`'{}'::text[]`),
 });
 
 export const lemmas = pgTable("lemmas", {

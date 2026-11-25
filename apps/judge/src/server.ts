@@ -6,7 +6,8 @@
  */
 import Fastify, { type FastifyInstance } from "fastify";
 import { timingSafeEqual } from "node:crypto";
-import { JudgeRequestSchema, MAX_PROOF_BYTES } from "@hatchery/shared";
+import { JudgeRequestSchema, MAX_PROOF_BYTES, StatementCheckRequestSchema } from "@hatchery/shared";
+import { statementCheck } from "./statement-check.ts";
 import type { JudgeConfig } from "./config.ts";
 import { judge, type JudgeOptions } from "./judge.ts";
 import { runnerInfo, searchLibrary, SEARCH_QUERY_RE, type RunnerInfo } from "./info.ts";
@@ -79,5 +80,19 @@ export function buildServer(config: JudgeConfig, opts: JudgeOptions = {}): Fasti
       throw err;
     }
   });
+  /** Check a proposed statement: well-formed, elaborates with sorry, not trivial (section 7). */
+  app.post("/statement-check", async (request, reply) => {
+    if (!authorized(request.headers.authorization)) return reply.code(401).send({ error: "unauthorized" });
+    const parsed = StatementCheckRequestSchema.safeParse(request.body);
+    if (!parsed.success) return reply.code(400).send({ error: "invalid request", issues: parsed.error.issues });
+    const { flavor } = await getInfo();
+    try {
+      return await limiter.run(() => statementCheck(parsed.data, config, { runner: opts.runner, flavor }));
+    } catch (err) {
+      if (err instanceof QueueFullError) return reply.code(503).send({ error: "judge queue full, retry later" });
+      throw err;
+    }
+  });
+
   return app;
 }

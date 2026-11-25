@@ -39,6 +39,11 @@ export const TOOLS: ToolDef[] = [
     inputSchema: obj({ path: { type: "string" } }),
   },
   {
+    name: "request_split",
+    description: "Ask the decomposer to split this lemma into smaller statements (they still need human approval before anyone can work on them). Use it when the lemma is too big for one proof.",
+    inputSchema: obj({ reason: { type: "string", description: `Which smaller steps you think it needs (max ${MESSAGE_LIMITS.body} characters).` } }),
+  },
+  {
     name: "ask_teammates",
     description: `Ask up to two teammates for help. Allowed once per lemma, only after 3 failed checks in a row. Say what you tried and exactly where it broke. Their answer appears in a later turn or your next attempt.`,
     inputSchema: obj({
@@ -76,6 +81,10 @@ export async function runTool(desk: DeskClient, attemptId: number, name: string,
       case "search_checked": {
         const found = await desk.searchChecked(str("query"));
         return { kind: "result", content: found.length ? JSON.stringify(found, null, 1) : "(no checked lemma matches)", isError: false };
+      }
+      case "request_split": {
+        const r = await desk.requestSplit(attemptId, str("reason").slice(0, MESSAGE_LIMITS.body));
+        return { kind: "result", isError: false, content: `Split request #${r.splitRequestId} recorded. The decomposer will propose smaller statements; a human approves them before they can be leased.` };
       }
       case "read_file":
         return { kind: "result", content: await desk.readFile(str("path")), isError: false };

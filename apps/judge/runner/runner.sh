@@ -2,6 +2,8 @@
 # Entrypoint of the Lean runner container. Each mode runs in its OWN fresh container.
 # Input on stdin is a tar archive built by the judge service (apps/judge/src/tar.ts):
 #
+#   statements.txt        Lean names of the approved statements sent along (target + those of deps)
+#   Statements/<L>.lean   their trusted sources (approved by a human; compiled first)
 #   deps.txt              one Lean name per line, dependency order (may be empty)
 #   Proofs/<L_dep>.lean   source of each already-CHECKED proof the submission imports
 #   Submission.lean       (compile mode) the untrusted proof
@@ -27,6 +29,18 @@ unpack() { # $1 = dir
   rm -rf "$1" && mkdir -p "$1" && head -c 300000000 | tar -x --no-same-owner --no-same-permissions -C "$1" -f - || exit 2
 }
 
+build_statements() { # $1 = dir holding Statements/*.lean and statements.txt
+  local dir="$1" st
+  [ -f "$dir/statements.txt" ] || return 0
+  while IFS= read -r st; do
+    [ -z "$st" ] && continue
+    [[ "$st" =~ ^L_[A-Za-z0-9_]+$ ]] || { echo "invalid statement name" >&2; exit 2; }
+    if ! LEAN_PATH="$dir:$BASE_LEAN_PATH" "$LEAN_BIN" --root="$dir" "$dir/Statements/$st.lean" -o "$dir/Statements/$st.olean" >&2; then
+      echo "statement Statements.$st failed to compile" >&2; exit 3
+    fi
+  done < "$dir/statements.txt"
+}
+
 build_deps() { # $1 = dir holding Proofs/*.lean and deps.txt; oleans are written next to the sources
   local dir="$1" dep
   [ -f "$dir/deps.txt" ] || return 0
@@ -42,6 +56,7 @@ build_deps() { # $1 = dir holding Proofs/*.lean and deps.txt; oleans are written
 case "${1:-}" in
   compile)
     unpack /tmp/work
+    build_statements /tmp/work
     build_deps /tmp/work
     cd /tmp/work || exit 2
     [ -f Submission.lean ] || exit 2
@@ -56,9 +71,12 @@ case "${1:-}" in
     name="${2:-}"
     if ! [[ "$name" =~ ^L_[A-Za-z0-9_]+$ ]]; then echo "invalid lean name" >&2; exit 2; fi
     unpack /tmp/in
-    rm -rf /tmp/deps /tmp/sub /tmp/chk && mkdir -p /tmp/deps/Proofs /tmp/sub /tmp/chk || exit 2
+    rm -rf /tmp/deps /tmp/sub /tmp/chk && mkdir -p /tmp/deps/Proofs /tmp/deps/Statements /tmp/sub /tmp/chk || exit 2
     [ -f /tmp/in/deps.txt ] && cp /tmp/in/deps.txt /tmp/deps/
+    [ -f /tmp/in/statements.txt ] && cp /tmp/in/statements.txt /tmp/deps/
     [ -d /tmp/in/Proofs ] && cp /tmp/in/Proofs/*.lean /tmp/deps/Proofs/ 2>/dev/null
+    [ -d /tmp/in/Statements ] && cp /tmp/in/Statements/*.lean /tmp/deps/Statements/ 2>/dev/null
+    build_statements /tmp/deps
     build_deps /tmp/deps
     mv /tmp/in/Submission.olean /tmp/sub/Submission.olean || exit 2
     LP="/tmp/deps:$BASE_LEAN_PATH:/tmp/sub"

@@ -7,6 +7,9 @@ The items below need a person: credentials, money, or an outside service.
 
 - [ ] **Run the real agent on the 5 seed lemmas, check the judge rejects sorry, and compare recorded costs with the Anthropic Console** — to be done once a key exists.
   1. `cp .env.example .env`. Set `ANTHROPIC_API_KEY`, `AGENT_MODEL=claude-opus-5-5`, `DESK_WORKER_TOKEN` (`openssl rand -hex 24`), `ADMIN_TOKEN` (same), `HATCHERY_UID=$(id -u)`, `HATCHERY_GID=$(id -g)`, `WORKER_COUNT=1`.
+     This is a **real run**: to let the desk commit accepted proofs into this checkout, also set
+     `PROOF_COMMIT_MODE=commit`, `HATCHERY_REAL_RUN=1`, `REPO_MOUNT_MODE=rw`. Leave them out to keep the
+     bot commits in a throwaway sandbox clone instead (the default).
   2. Give the pantry some (mock) food, which limits spend: the daily budget is pantry / 30.
      `JUDGE_FLAVOR=lite docker compose up -d desk`, then
      `docker compose exec desk node --import tsx src/cli.ts pantry-mock-inflow 30` (→ $1/day).
@@ -21,7 +24,12 @@ The items below need a person: credentials, money, or an outside service.
       full Mathlib image. Nothing else uses Mathlib until its `full` job is green (docs/deploy.md, "Mathlib gate").
 - [ ] **Turn on Mathlib lemmas** (`MATHLIB_LEMMAS_ENABLED=1`) only after that job is green, on a judge
       running the full image (built on the VPS, never on the laptop).
-- [ ] **Decide where bot proof commits go.** The desk commits accepted proofs locally (`lean/Proofs/`).
-      It never pushes. Pushing (and a bot account) belongs to Phase 6.
+- [ ] **Invite the math advisor.** `docker compose exec desk node --import tsx src/cli.ts reviewer add "Name" advisor`
+      prints a one-time link; send it privately. They review the four DRAFT definitions in the browser.
+      Until they approve a definition, no statement that uses it can be approved or worked on.
+- [ ] **Set up the proof bot on the server** (docs/deploy.md, "Pushing proofs"): a dedicated GitHub
+      account, a write deploy key for this repo, and the Actions variable `PROOF_BOT_LOGIN`. Never push from a laptop.
+- [ ] **Commit approved statements** to `lean/Statements/` from time to time (`pnpm desk export-statements --to lean`
+      with `HATCHERY_REAL_RUN=1`, review, commit). Proofs of those lemmas are committed after that.
 - [ ] Out of scope for Claude Code, as always (BUILD_PROMPT.md section 13): the token, wallets, fee routing,
       legal review, paying API bills, marketing.

@@ -20,7 +20,7 @@ import {
 import { budgetStatus, type BudgetStatus } from "./budget.ts";
 import type { DeskConfig } from "./config.ts";
 import type { Db, Tx } from "./db/client.ts";
-import { agents, attempts, events, leases, lemmas, messages, modelCalls, programs, reuses, settings, statements } from "./db/schema.ts";
+import { agents, attempts, definitions, events, leases, lemmas, messages, modelCalls, programs, reuses, settings, statements } from "./db/schema.ts";
 import type { JudgeClient, JudgeInfo } from "./judge-client.ts";
 import { sha256, type LeanRepo } from "./lean-repo.ts";
 import { ProofCommitter } from "./proof-committer.ts";
@@ -31,15 +31,54 @@ export class DeskError extends Error {
   }
 }
 
-/** Programs known to the desk. Phase 3 adds the research programs from section 7. */
+/** Programs (section 7). The four research programs are the four camps on the site. */
 export const PROGRAMS = [
   {
     slug: "core-warmup",
+    idPrefix: "core",
+    sort: 0,
     title: "Core warm-up",
     description:
       "Known, easy facts provable in core Lean. They calibrate the pipeline (agents, judge, costs). They are not research progress on P vs NP.",
   },
+  {
+    slug: "circuit-lower-bounds",
+    idPrefix: "circ",
+    sort: 1,
+    title: "Circuit lower bounds",
+    description: "Known results towards circuit lower bounds: Håstad's switching lemma, parity is not in AC0.",
+  },
+  {
+    slug: "monotone-circuits",
+    idPrefix: "mono",
+    sort: 2,
+    title: "Monotone circuits",
+    description: "Known results on monotone circuits: the sunflower lemma, Razborov's monotone lower bound for CLIQUE.",
+  },
+  {
+    slug: "proof-complexity",
+    idPrefix: "pc",
+    sort: 3,
+    title: "Proof complexity",
+    description: "Known results in proof complexity: Haken's lower bound for the pigeonhole principle in resolution, the Ben-Sasson–Wigderson size–width tradeoff.",
+  },
+  {
+    slug: "barriers",
+    idPrefix: "bar",
+    sort: 4,
+    title: "Barriers",
+    description: "Known barrier results: Baker–Gill–Solovay (relativization), Razborov–Rudich (natural proofs).",
+  },
 ] as const;
+
+export interface DefinitionState {
+  id: string;
+  status: "draft" | "approved" | "changes_requested";
+  /** Approved for exactly the current source, and every imported definition is effective too. */
+  effective: boolean;
+  /** Why it counts as a draft (empty when effective). */
+  blockers: string[];
+}
 
 type DbOrTx = Db | Tx;
 
@@ -120,6 +159,8 @@ export class Desk {
       mode: config.PROOF_COMMIT_MODE,
       authorName: config.PROOF_COMMIT_AUTHOR_NAME,
       authorEmail: config.PROOF_COMMIT_AUTHOR_EMAIL,
+      sandboxDir: config.PROOF_SANDBOX_DIR,
+      push: config.PROOF_PUSH ? { remote: config.PROOF_PUSH_REMOTE, branch: config.PROOF_PUSH_BRANCH } : undefined,
     });
   }
 
@@ -191,20 +232,28 @@ export class Desk {
 
   // ================================================================ statements
 
-  /** Sync trusted statement files into the DB (approved: they are committed by a maintainer). */
+  /**
+   * Sync the repo's statement files into the DB.
+   * A repo statement that imports no definitions (core warm-up) is approved by the commit itself.
+   * One that imports a definition enters the review queue as "proposed": it can only be approved
+   * in the review tool, and only once every definition it uses is reviewed (not a draft).
+   * A changed source goes back through the same rule (an approval is for exact source text).
+   */
   async syncStatements(): Promise<{ added: string[]; changed: string[] }> {
     const files = this.repo.statementFiles();
     const added: string[] = [];
     const changed: string[] = [];
+    await this.syncDefinitions();
     await this.db.transaction(async (tx) => {
       for (const p of PROGRAMS) {
-        await tx.insert(programs).values(p).onConflictDoUpdate({ target: programs.slug, set: { title: p.title, description: p.description } });
+        await tx.insert(programs).values(p).onConflictDoUpdate({ target: programs.slug, set: { title: p.title, description: p.description, idPrefix: p.idPrefix, sort: p.sort } });
       }
       const progRows = await tx.select().from(programs);
       for (const f of files) {
         const prog = progRows.find((p) => p.slug === f.program);
         if (!prog) throw new Error(`statement ${f.id}: unknown program "${f.program}"`);
         const [existing] = await tx.select().from(statements).where(eq(statements.id, f.id));
+        const autoApproved = f.defImports.length === 0;
         const values = {
           programId: prog.id,
           leanName: f.leanName,
@@ -213,20 +262,119 @@ export class Desk {
           dependsOn: f.dependsOn,
           requiresMathlib: f.requiresMathlib,
           fileSha256: f.fileSha256,
+          source: f.source,
+          defImports: f.defImports,
+          origin: existing?.origin ?? "repo",
         };
+        const review = autoApproved
+          ? { status: "approved" as const, approvedBy: "repo (no definitions used)", approvedAt: this.now(), check: null }
+          : { status: "proposed" as const, approvedBy: null, approvedAt: null, check: null, proposedAt: this.now() };
         if (!existing) {
-          await tx.insert(statements).values({ id: f.id, ...values, status: "approved", proposedBy: "repo", approvedBy: "repo" });
-          await tx.insert(lemmas).values({ id: f.id, status: "open" });
+          await tx.insert(statements).values({ id: f.id, ...values, ...review, proposedBy: "repo" });
+          if (autoApproved) await tx.insert(lemmas).values({ id: f.id, status: "open" });
           added.push(f.id);
-          await emit(tx, "statement_synced", { lemmaId: f.id, payload: { change: "added" } });
-        } else if (existing.fileSha256 !== f.fileSha256) {
-          await tx.update(statements).set(values).where(eq(statements.id, f.id));
-          changed.push(f.id);
-          await emit(tx, "statement_synced", { lemmaId: f.id, payload: { change: "changed", from: existing.fileSha256, to: f.fileSha256 } });
+          await emit(tx, "statement_synced", { lemmaId: f.id, payload: { change: "added", status: review.status } });
+          if (!autoApproved) await emit(tx, "statement_proposed", { lemmaId: f.id, payload: { origin: "repo" } });
+        } else if (existing.fileSha256 !== f.fileSha256 || !existing.source) {
+          const reviewChange = existing.fileSha256 !== f.fileSha256 ? review : {};
+          await tx.update(statements).set({ ...values, ...reviewChange }).where(eq(statements.id, f.id));
+          if (autoApproved) await tx.insert(lemmas).values({ id: f.id, status: "open" }).onConflictDoNothing();
+          if (existing.fileSha256 !== f.fileSha256) {
+            changed.push(f.id);
+            await emit(tx, "statement_synced", { lemmaId: f.id, payload: { change: "changed", from: existing.fileSha256, to: f.fileSha256, status: review.status } });
+          }
         }
       }
     });
     return { added, changed };
+  }
+
+  /**
+   * Sync definition modules (lean/Defs). Every one starts as a DRAFT. An advisor's approval is for
+   * exact source text: if the file changes, it is a draft again, and every approved statement that
+   * uses it goes back to "proposed" (it must be re-reviewed).
+   */
+  async syncDefinitions(): Promise<{ added: string[]; changed: string[] }> {
+    const files = this.repo.definitionFiles();
+    const added: string[] = [];
+    const changed: string[] = [];
+    await this.db.transaction(async (tx) => {
+      const existingRows = await tx.select().from(definitions);
+      for (const f of files) {
+        const ex = existingRows.find((d) => d.id === f.id);
+        const values = { path: f.path, title: f.title, summary: f.summary, source: f.source, sourceSha256: f.sourceSha256, imports: f.imports, requiresMathlib: f.requiresMathlib, removed: false, updatedAt: this.now() };
+        if (!ex) {
+          await tx.insert(definitions).values({ id: f.id, ...values, status: "draft" });
+          added.push(f.id);
+          await emit(tx, "definition_synced", { payload: { definition: f.id, change: "added", status: "draft" } });
+        } else if (ex.sourceSha256 !== f.sourceSha256 || ex.removed) {
+          await tx.update(definitions).set({ ...values, status: "draft" }).where(eq(definitions.id, f.id));
+          changed.push(f.id);
+          await emit(tx, "definition_synced", { payload: { definition: f.id, change: "changed", status: "draft" } });
+        }
+      }
+      for (const ex of existingRows) {
+        if (!ex.removed && !files.some((f) => f.id === ex.id)) {
+          await tx.update(definitions).set({ removed: true, status: "draft", updatedAt: this.now() }).where(eq(definitions.id, ex.id));
+          changed.push(ex.id);
+          await emit(tx, "definition_synced", { payload: { definition: ex.id, change: "removed" } });
+        }
+      }
+    });
+    if (changed.length) await this.revertStatementsUsingDrafts();
+    return { added, changed };
+  }
+
+  /** Effective status of every definition (draft unless approved for its current source, transitively). */
+  async definitionStates(): Promise<Map<string, DefinitionState>> {
+    const rows = await this.db.select().from(definitions);
+    const byId = new Map(rows.map((r) => [r.id, r]));
+    const memo = new Map<string, DefinitionState>();
+    const visit = (id: string, path: string[]): DefinitionState => {
+      const cached = memo.get(id);
+      if (cached) return cached;
+      const d = byId.get(id);
+      if (!d || d.removed) return { id, status: "draft", effective: false, blockers: [`${id} does not exist`] };
+      const blockers: string[] = [];
+      if (d.status !== "approved") blockers.push(`${id} is ${d.status === "draft" ? "a draft" : "waiting for changes"}`);
+      else if (d.reviewedSha256 !== d.sourceSha256) blockers.push(`${id} changed since it was reviewed`);
+      for (const imp of d.imports) {
+        if (path.includes(imp)) continue;
+        const s = visit(imp, [...path, id]);
+        if (!s.effective) blockers.push(`it uses ${imp}, which is a draft`);
+      }
+      const st: DefinitionState = { id, status: d.status, effective: blockers.length === 0, blockers };
+      memo.set(id, st);
+      return st;
+    };
+    for (const r of rows) visit(r.id, []);
+    return memo;
+  }
+
+  /** Definitions (transitively imported) that block a statement from being approved. */
+  async draftBlockers(defImports: string[]): Promise<string[]> {
+    const states = await this.definitionStates();
+    return defImports.flatMap((d) => {
+      const s = states.get(d);
+      return !s ? [`${d} does not exist`] : s.effective ? [] : s.blockers.map((b) => (b.startsWith(d) ? b : `${d}: ${b}`));
+    });
+  }
+
+  /** Approved statements that now use a draft definition go back to "proposed" (re-review needed). */
+  async revertStatementsUsingDrafts(): Promise<string[]> {
+    const approved = await this.db.select().from(statements).where(eq(statements.status, "approved"));
+    const reverted: string[] = [];
+    for (const st of approved) {
+      if (!st.defImports.length) continue;
+      const blockers = await this.draftBlockers(st.defImports);
+      if (!blockers.length) continue;
+      await this.db.transaction(async (tx) => {
+        await tx.update(statements).set({ status: "proposed", approvedBy: null, approvedAt: null }).where(eq(statements.id, st.id));
+        await emit(tx, "statement_reviewed", { lemmaId: st.id, payload: { decision: "back_to_review", reason: blockers.join("; ") } });
+      });
+      reverted.push(st.id);
+    }
+    return reverted;
   }
 
   // ================================================================ agents
@@ -277,6 +425,8 @@ export class Desk {
     const now = this.now();
     const nowIso = now.toISOString();
     const expiresAt = new Date(now.getTime() + this.config.LEASE_TTL_SECONDS * 1000);
+    const states = await this.definitionStates();
+    const draftDefs = [...states.values()].filter((d) => !d.effective).map((d) => d.id);
     const leased = await this.db.transaction(async (tx) => {
       const held = await tx.select().from(leases).where(eq(leases.holder, agentId));
       if (held.length) throw new DeskError(409, `agent already holds a lease on ${held[0]!.lemmaId}`);
@@ -287,6 +437,7 @@ export class Desk {
         join programs p on p.id = s.program_id
         where l.status = 'open' and s.status = 'approved' and p.status = 'active'
           and (${mathlib} or not s.requires_mathlib)
+          and not (s.def_imports && ${`{${draftDefs.join(",")}}`}::text[])
           and (${programSlug ?? null}::text is null or p.slug = ${programSlug ?? null})
           and not (l.offered_to is not null and l.offered_to <> ${agentId} and l.offered_until > ${nowIso}::timestamptz)
           and not exists (select 1 from events e where e.type = 'abandoned_by_agent' and e.agent_id = ${agentId} and e.lemma_id = l.id)
@@ -331,7 +482,7 @@ export class Desk {
       leanName: st.s.leanName,
       title: st.s.title,
       program: st.programSlug,
-      statementSource: this.repo.read(`Statements/${st.s.leanName}.lean`),
+      statementSource: st.s.source, // the approved source (decomposer statements exist only in the DB)
       leanStatement: st.s.leanStatement,
       expiresAt: expiresAt.toISOString(),
       previousNotes: prev.map((a) => ({
@@ -457,7 +608,7 @@ export class Desk {
   async recordUsage(
     attemptId: number | null,
     agentId: string,
-    call: { purpose: "prove" | "reply"; parts: UsagePart[]; requestId?: string },
+    call: { purpose: "prove" | "reply" | "decompose"; parts: UsagePart[]; requestId?: string },
     tx?: Tx,
   ): Promise<{ costUsd: string; costMicros: number; attemptCostUsd: string | null }> {
     if (!call.parts.length) throw new DeskError(400, "a model call needs at least one usage part");
@@ -571,11 +722,12 @@ export class Desk {
       const depFp = memo.get(d) ?? (await this.fingerprint(d, l?.proofImports ?? [], memo));
       deps.push(`${d}:${l?.checkedSourceSha256 ?? "none"}:${depFp}`);
     }
+    const [st] = await this.db.select({ sha: statements.fileSha256, status: statements.status }).from(statements).where(eq(statements.id, lemmaId));
     const fp = sha256(
       JSON.stringify({
         env: this.repo.envHash(),
         defs: this.repo.defsHash(),
-        statement: this.repo.statementFileSha(lemmaIdToLeanName(lemmaId)) ?? "missing",
+        statement: st && st.status === "approved" ? st.sha : "not-approved",
         deps,
       }),
     );
@@ -587,8 +739,15 @@ export class Desk {
     const info = await this.assertJudgeFresh();
     const [st] = await this.db.select().from(statements).where(eq(statements.id, lemmaId));
     if (st?.requiresMathlib && info.flavor !== "full") throw new DeskError(503, `${lemmaId} needs Mathlib but the judge runs the ${info.flavor} image`);
+    if (!st || st.status !== "approved") throw new DeskError(409, `${lemmaId} is not an approved statement`);
     const { deps, direct } = await this.resolveDeps(source, lemmaId);
-    const verdict = await this.judge.check({ lemmaId, source, deps });
+    const stmtRows = await this.db.select().from(statements).where(inArray(statements.id, [lemmaId, ...deps.map((d) => d.lemmaId)]));
+    const statementsSent = [lemmaId, ...deps.map((d) => d.lemmaId)].map((id) => {
+      const row = stmtRows.find((r) => r.id === id);
+      if (!row?.source) throw new DeskError(409, `statement ${id} has no source`);
+      return { lemmaId: id, source: row.source };
+    });
+    const verdict = await this.judge.check({ lemmaId, source, deps, statements: statementsSent });
     // A runner failure (Docker hiccup, host suspend) says nothing about the proof: never record it
     // as the agent's failed attempt. The caller retries.
     if (verdict.verdict === "fail" && verdict.reasons.length && verdict.reasons.every((r) => r.code === "runner_error")) {
@@ -692,11 +851,14 @@ export class Desk {
   /** Write + commit the proof; the commit that adds it becomes the lemma's pinned commit. */
   private async commitProof(lemmaId: string, source: string, message: string): Promise<void> {
     try {
-      const sha = await this.committer.publish(lemmaIdToLeanName(lemmaId), source, message);
-      if (sha) {
+      const [st] = await this.db.select({ source: statements.source }).from(statements).where(eq(statements.id, lemmaId));
+      const r = await this.committer.publish(lemmaIdToLeanName(lemmaId), source, st?.source ?? "", message);
+      if (r.deferred) {
+        console.warn(`proof of ${lemmaId} not committed yet: its approved statement file is not in the target checkout (desk export-statements)`);
+      } else if (r.commit) {
         await this.db.transaction(async (tx) => {
-          await tx.update(lemmas).set({ checkedCommit: sha }).where(eq(lemmas.id, lemmaId));
-          await emit(tx, "proof_committed", { lemmaId, payload: { commit: sha, path: `lean/Proofs/${lemmaIdToLeanName(lemmaId)}.lean` } });
+          await tx.update(lemmas).set({ checkedCommit: r.commit }).where(eq(lemmas.id, lemmaId));
+          await emit(tx, "proof_committed", { lemmaId, payload: { commit: r.commit, pushed: r.pushed, path: `lean/Proofs/${lemmaIdToLeanName(lemmaId)}.lean` } });
         });
       }
     } catch (err) {
@@ -724,9 +886,13 @@ export class Desk {
   }
 
   /** Make lean/Proofs/ match the DB (after a crash between the DB update and the commit). */
-  async reconcileProofs(): Promise<{ written: string[]; removed: string[] }> {
-    const rows = await this.db.select().from(lemmas).where(inArray(lemmas.status, ["checked", "recheck"]));
-    return this.committer.reconcile(new Map(rows.filter((l) => l.checkedSource).map((l) => [lemmaIdToLeanName(l.id), l.checkedSource!])));
+  async reconcileProofs(): Promise<{ written: string[]; removed: string[]; deferred: string[] }> {
+    const rows = await this.db.select({ l: lemmas, stmt: statements.source }).from(lemmas).innerJoin(statements, eq(statements.id, lemmas.id));
+    const checked = new Map(
+      rows.filter((r) => ["checked", "recheck"].includes(r.l.status) && r.l.checkedSource).map((r) => [lemmaIdToLeanName(r.l.id), { source: r.l.checkedSource!, statement: r.stmt }]),
+    );
+    const notChecked = new Set(rows.filter((r) => !["checked", "recheck"].includes(r.l.status)).map((r) => lemmaIdToLeanName(r.l.id)));
+    return this.committer.reconcile(checked, notChecked);
   }
 
   // ================================================================ collaboration (section 6b)
@@ -1039,6 +1205,8 @@ export class Desk {
       for (const l of pending) {
         const depStatuses = await Promise.all(l.proofImports.map(statusOf));
         if (depStatuses.some((s) => s === "recheck")) continue; // wait for dependencies
+        const [stmt] = await this.db.select({ status: statements.status }).from(statements).where(eq(statements.id, l.id));
+        if (stmt?.status !== "approved") continue; // its statement is back in review: wait for the reviewer
         progressed = true;
         let verdict: JudgeVerdict | null = null;
         let reason = "";

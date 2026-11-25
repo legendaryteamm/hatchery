@@ -60,14 +60,57 @@ The desk also refuses all leases and checks when the judge image is **stale**: t
 desk's checkout. `GET /health` on the desk shows `judge.fresh`. After changing statements or
 definitions, rebuild the runner image and restart the judge.
 
-## The desk commits accepted proofs
+## Where bot commits go
 
-With `PROOF_COMMIT_MODE=commit` (default) the desk writes `lean/Proofs/<L>.lean` and commits only
-that file in the checkout it runs from, as "Hatchery Judge". It needs:
-- the checkout mounted read-write (compose mounts `.` at `/repo`), and `git` (in the desk image);
-- to run as the checkout's owner: set `HATCHERY_UID` / `HATCHERY_GID` (`id -u`, `id -g`) in `.env`.
+When the judge accepts a proof, the desk writes `lean/Proofs/<L>.lean` and commits **only that file**
+as "Hatchery Judge". Where that commit lands:
 
-It never pushes. Pushing the bot's commits (and from which account) is a Phase 6 decision.
+| Setting | Where | Used for |
+|---------|-------|----------|
+| `PROOF_COMMIT_MODE=sandbox` (**default**) | a throwaway clone (`PROOF_SANDBOX_DIR`, default a new temp dir; never inside the checkout) | tests, mock runs, dev runs |
+| `PROOF_COMMIT_MODE=commit` + `HATCHERY_REAL_RUN=1` (+ `REPO_MOUNT_MODE=rw` in Docker) | the real checkout | a real run you start on purpose, and the server |
+| `PROOF_COMMIT_MODE=off` | nowhere (database only) | |
+
+The desk refuses to start in `commit`/`write` mode without `HATCHERY_REAL_RUN=1`. In Docker the
+checkout is mounted read-only unless `REPO_MOUNT_MODE=rw`. The test suite fails if a run changes
+the real checkout at all (HEAD, files, contents, directories).
+
+A proof is committed only once its **approved statement file** is in that checkout with the same
+content, because CI re-checks every proof against it. Approved statements reach the repo through a
+maintainer, never the bot: `pnpm desk export-statements --to <lean dir>`, review the diff, commit,
+push. The desk commits the waiting proofs at its next start (or the next accepted proof).
+
+To run the desk as the checkout's owner (so its commits are yours on disk), set `HATCHERY_UID` /
+`HATCHERY_GID` (`id -u`, `id -g`) in `.env`.
+
+## Pushing proofs (who pushes)
+
+**Locally: never push.** `PROOF_PUSH` defaults to 0 and is refused unless `PROOF_COMMIT_MODE=commit`
+and `HATCHERY_REAL_RUN=1`. Do not set it on a laptop.
+
+**On the server**, a dedicated bot GitHub account pushes:
+1. Create a GitHub account for the bot (e.g. `hatchery-proof-bot`), and give it write access to
+   this repository only.
+2. Create an SSH key pair on the server (`ssh-keygen -t ed25519 -f /srv/hatchery/secrets/proof_bot_deploy_key -N ""`)
+   and add the public key as a **deploy key with write access** on this repository
+   (Settings → Deploy keys). A deploy key works for one repository only.
+3. Mount the private key read-only into the desk container and point git at it:
+   `GIT_SSH_COMMAND="ssh -i /run/secrets/proof_bot_deploy_key -o IdentitiesOnly=yes"`, plus
+   `PROOF_COMMIT_MODE=commit`, `HATCHERY_REAL_RUN=1`, `REPO_MOUNT_MODE=rw`, `PROOF_PUSH=1`,
+   `PROOF_PUSH_REMOTE=origin` (an `git@github.com:…` remote), `PROOF_PUSH_BRANCH=main`.
+4. In the repository settings, set the Actions variable `PROOF_BOT_LOGIN` to the bot's GitHub login.
+
+**The bot touches only `lean/Proofs/`**, enforced three ways:
+- the desk commits a single path, `lean/Proofs/<L>.lean`, with `git commit --only`;
+- the `bot-scope` job in `.github/workflows/judge.yml` fails any push by `PROOF_BOT_LOGIN` that
+  changes a file outside `lean/Proofs/` (or creates a branch);
+- optional: if your GitHub plan offers push rulesets with file-path restrictions, restrict the bot's
+  pushes to `lean/Proofs/**` there too.
+
+**CI re-checks every pushed proof.** The lite and full jobs run `pnpm --filter @hatchery/judge cli check-repo`,
+which re-judges every file in `lean/Proofs/` against its statement in `lean/Statements/`, with
+imported checked proofs resolved from the repo. Proofs that need Mathlib are checked by the full job.
+A failure makes the workflow red. A proof the desk thought was fine but CI rejects is a bug to investigate.
 
 ## Checked proofs and commits
 

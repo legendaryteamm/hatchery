@@ -13,6 +13,9 @@
     "judge:sample": "pnpm --filter @hatchery/judge sample",
     "desk": "pnpm --filter @hatchery/desk cli",
     "desk:start": "pnpm --filter @hatchery/desk start",
-    "worker:start": "pnpm --filter @hatchery/worker start"
+    "worker:start": "pnpm --filter @hatchery/worker start",
+    "decomposer:start": "pnpm --filter @hatchery/worker decomposer",
+    "web:dev": "pnpm --filter @hatchery/web dev",
+    "web:build": "pnpm --filter @hatchery/web build"
   }
 }

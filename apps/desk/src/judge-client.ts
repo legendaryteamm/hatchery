@@ -1,4 +1,10 @@
-import { JudgeVerdictSchema, type JudgeRequestInput, type JudgeVerdict } from "@hatchery/shared";
+import {
+  JudgeVerdictSchema,
+  StatementCheckResultSchema,
+  type JudgeRequestInput,
+  type JudgeVerdict,
+  type StatementCheckResult,
+} from "@hatchery/shared";
 
 export interface JudgeInfo {
   flavor: "full" | "lite" | "unknown";
@@ -11,6 +17,7 @@ export interface JudgeClient {
   check(req: JudgeRequestInput): Promise<JudgeVerdict>;
   info(): Promise<JudgeInfo>;
   search(query: string): Promise<string>;
+  statementCheck(req: { lemmaId: string; source: string }): Promise<StatementCheckResult>;
 }
 
 export class HttpJudgeClient implements JudgeClient {
@@ -40,6 +47,18 @@ export class HttpJudgeClient implements JudgeClient {
     const body = (await res.json()) as Partial<JudgeInfo> & { ok?: boolean; error?: string };
     if (!res.ok || !body.ok) throw new Error(`judge unhealthy: ${body.error ?? res.status}`);
     return { flavor: body.flavor ?? "unknown", trustedSha: body.trustedSha ?? "", leanVersion: body.leanVersion ?? "" };
+  }
+
+  async statementCheck(req: { lemmaId: string; source: string }): Promise<StatementCheckResult> {
+    for (let i = 0; ; i++) {
+      const res = await fetch(`${this.baseUrl}/statement-check`, { method: "POST", headers: this.headers(), body: JSON.stringify(req) });
+      if (res.status === 503 && i < 30) {
+        await new Promise((r) => setTimeout(r, 2000));
+        continue;
+      }
+      if (!res.ok) throw new Error(`judge returned ${res.status}: ${(await res.text()).slice(0, 300)}`);
+      return StatementCheckResultSchema.parse(await res.json());
+    }
   }
 
   async search(query: string): Promise<string> {

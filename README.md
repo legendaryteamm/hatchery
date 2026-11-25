@@ -5,8 +5,8 @@ colony of tamagotchi-style pets.
 
 > Nothing here says P vs NP is settled. A lemma counts only when the Lean checker passes it.
 
-**Status: Phase 2** (the fleet and the budget). See [`BUILD_PROMPT.md`](BUILD_PROMPT.md) for the full
-plan, [`docs/phase-0.md`](docs/phase-0.md) to [`docs/phase-2.md`](docs/phase-2.md) for what exists today,
+**Status: Phase 3** (programs and review). See [`BUILD_PROMPT.md`](BUILD_PROMPT.md) for the full
+plan, [`docs/phase-0.md`](docs/phase-0.md) to [`docs/phase-3.md`](docs/phase-3.md) for what exists today,
 and [`HANDOFF.md`](HANDOFF.md) for the steps that need a human (API key, GitHub, money).
 
 ## Layout
@@ -18,7 +18,9 @@ apps/desk         Leases, budget, kill switch, spend ledger, messages, events,
 apps/worker       Agent loop + fleet launcher (provider interface)         (Phase 1-2)
 packages/shared   zod schemas, prices, events, pet identity                (Phase 0-1)
 lean/             Lean 4 project: Defs/, Statements/, Proofs/, Judge/      (Phase 0)
-apps/web, apps/indexer                                                     (later phases)
+apps/web          Review tool for definitions and statements (+ public
+                  definitions page); the colony site comes in Phase 4      (Phase 3)
+apps/indexer                                                               (later phases)
 docs/             phase notes, judge design, open questions, attribution
 ```
 

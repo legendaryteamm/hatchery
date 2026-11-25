@@ -15,6 +15,7 @@ const fakeRunner: ContainerRunner = async (_image, args) => ({
     : args[0] === "search" ? "Init/Foo.lean:1:theorem foo" : args[0] === "compile" ? "OLEAN" : `HATCHERY_TYPECHECK ok\nHATCHERY_LEANCHECKER ok\nHATCHERY_REPORT ${JSON.stringify(report)}\n`),
 });
 const source = "import Statements.L_fixture_001\ntheorem Proof.L_fixture_001 : Statement.L_fixture_001 := fun n => Nat.add_zero n\n";
+const statements = [{ lemmaId: "L-fixture-001", source: "def Statement.L_fixture_001 : Prop := ∀ n : Nat, n + 0 = n\n" }];
 
 describe("judge HTTP API", () => {
   const app = buildServer(config, { runner: fakeRunner });
@@ -22,15 +23,15 @@ describe("judge HTTP API", () => {
     app.inject({ method: "POST", url: "/check", payload: payload as object, headers: { authorization: auth } });
 
   it("requires the API token when configured", async () => {
-    expect((await post({ lemmaId: "L-fixture-001", source }, "Bearer nope")).statusCode).toBe(401);
+    expect((await post({ lemmaId: "L-fixture-001", source, statements }, "Bearer nope")).statusCode).toBe(401);
   });
   it("validates input with zod", async () => {
-    expect((await post({ lemmaId: "../../etc", source })).statusCode).toBe(400);
-    expect((await post({ lemmaId: "L-fixture-001", source: "" })).statusCode).toBe(400);
-    expect((await post({ lemmaId: "L-fixture-001", source: "x".repeat(200_001) })).statusCode).toBe(400);
+    expect((await post({ lemmaId: "../../etc", source, statements })).statusCode).toBe(400);
+    expect((await post({ lemmaId: "L-fixture-001", source: "", statements })).statusCode).toBe(400);
+    expect((await post({ lemmaId: "L-fixture-001", source: "x".repeat(200_001), statements })).statusCode).toBe(400);
   });
   it("returns a verdict", async () => {
-    const res = await post({ lemmaId: "L-fixture-001", source });
+    const res = await post({ lemmaId: "L-fixture-001", source, statements });
     expect(res.statusCode).toBe(200);
     expect(res.json()).toMatchObject({
       verdict: "pass", leanName: "L_fixture_001", stage: "done", reasons: [],

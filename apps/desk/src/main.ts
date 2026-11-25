@@ -2,6 +2,7 @@ import { loadConfig } from "./config.ts";
 import { connect, runMigrations } from "./db/client.ts";
 import { HttpJudgeClient } from "./judge-client.ts";
 import { LeanRepo } from "./lean-repo.ts";
+import { Review } from "./review.ts";
 import { buildServer } from "./server.ts";
 import { Desk } from "./service.ts";
 
@@ -9,7 +10,9 @@ const config = loadConfig();
 const { db } = connect(config.DATABASE_URL);
 await runMigrations(db);
 const desk = new Desk(db, new HttpJudgeClient(config.JUDGE_URL, config.JUDGE_API_TOKEN), new LeanRepo(config.LEAN_DIR), config);
-const app = buildServer(desk);
+const review = new Review(desk, desk.judge);
+const app = buildServer(desk, review);
+app.log.info({ proofCommits: config.PROOF_COMMIT_MODE, target: await desk.committer.targetLeanDir(), realRun: config.HATCHERY_REAL_RUN, push: config.PROOF_PUSH }, "where accepted proofs go");
 
 const synced = await desk.syncStatements();
 app.log.info(synced, "statements synced");
@@ -30,5 +33,9 @@ const recheck = async () => {
 };
 void recheck();
 setInterval(recheck, config.RECHECK_INTERVAL_SECONDS * 1000);
+// Automatic checks of proposed statements (well-formed, elaborates with sorry, not trivial).
+const checks = () => review.runPendingChecks().then((d) => d.length && app.log.info({ checked: d }, "statement checks")).catch((err) => app.log.error(err, "statement checks"));
+void checks();
+setInterval(checks, 60_000);
 
 await app.listen({ host: config.HOST, port: config.PORT });

@@ -13,7 +13,7 @@ import {
 } from "@hatchery/shared";
 import type { JudgeConfig } from "./config.ts";
 import { dockerRunner, type ContainerRunner, type SandboxLimits } from "./docker.ts";
-import { evaluateCheck, staticChecks, type CheckReport } from "./policy.ts";
+import { evaluateCheck, staticChecks, statementFileChecks, type CheckReport } from "./policy.ts";
 import { tar, type TarEntry } from "./tar.ts";
 
 const MAX_OLEAN_BYTES = 256 * 1024 * 1024;
@@ -61,6 +61,16 @@ export async function judge(input: JudgeRequestInput, config: JudgeConfig, opts:
   if (new Set(depNames).size !== depNames.length || depNames.includes(leanName)) {
     return done("static", [{ code: "dependency_error", message: "dependencies must be distinct and must not include the lemma itself" }]);
   }
+  // Statements are trusted (approved by a human, sent by the desk) but still sanity-checked.
+  const stmtNames = req.statements.map((s) => lemmaIdToLeanName(s.lemmaId));
+  const missing = [leanName, ...depNames].filter((n) => !stmtNames.includes(n));
+  if (missing.length || new Set(stmtNames).size !== stmtNames.length) {
+    return done("static", [{ code: "dependency_error", message: `statements must be sent once for the lemma and each dependency (missing: ${missing.join(", ") || "none"})` }]);
+  }
+  for (const [i, s] of req.statements.entries()) {
+    const problems = statementFileChecks(s.source, stmtNames[i]!);
+    if (problems.length) return done("static", [{ code: "dependency_error", message: `statement ${s.lemmaId}: ${problems.join("; ")}` }]);
+  }
 
   // 1. Static checks.
   if (!opts.skipStaticChecks) {
@@ -69,6 +79,8 @@ export async function judge(input: JudgeRequestInput, config: JudgeConfig, opts:
   }
 
   const depEntries: TarEntry[] = [
+    { name: "statements.txt", data: stmtNames.join("\n") + "\n" },
+    ...req.statements.map((s, i) => ({ name: `Statements/${stmtNames[i]}.lean`, data: s.source })),
     { name: "deps.txt", data: depNames.join("\n") + (depNames.length ? "\n" : "") },
     ...req.deps.map((d, i) => ({ name: `Proofs/${depNames[i]}.lean`, data: d.source })),
   ];

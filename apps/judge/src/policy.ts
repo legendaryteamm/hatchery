@@ -80,6 +80,29 @@ export function parseImports(source: string): string[] {
   return mods;
 }
 
+/** Imports a statement file may use: Init, Mathlib, and the reviewed definitions. */
+export function statementImportAllowed(mod: string): boolean {
+  return mod === "Init" || mod === "Mathlib" || /^(Mathlib|Defs)\.[A-Za-z0-9_.']+$/.test(mod);
+}
+
+/**
+ * A statement file holds imports, comments, optional `open` lines, and exactly one
+ * `def Statement.<L> : Prop := ...`. Returns a list of problems (empty = fine).
+ */
+export function statementFileChecks(source: string, leanName: string): string[] {
+  const problems: string[] = [];
+  for (const b of BANNED) if (b.re.test(source)) problems.push(`forbidden: ${b.why}`);
+  for (const m of source.matchAll(/set_option\s+([A-Za-z0-9_.]+)/g)) problems.push(`set_option ${m[1]} is not allowed in a statement`);
+  for (const mod of parseImports(source)) if (!statementImportAllowed(mod)) problems.push(`import ${mod} is not allowed in a statement (Mathlib, Defs.* only)`);
+  // Count declarations outside comments (banned words above are matched on the raw text, comments included).
+  const code = source.replace(/\/-[\s\S]*?-\//g, " ").replace(/--.*$/gm, "");
+  const defs = [...code.matchAll(/(?<![A-Za-z0-9_'.])(def|theorem|lemma|abbrev|instance|structure|inductive|class|opaque|example|noncomputable)(?![A-Za-z0-9_'])/g)];
+  const own = new RegExp(`(^|\\n)\\s*def\\s+Statement\\.${leanName}\\s*:\\s*Prop\\s*:=`);
+  if (!own.test(source)) problems.push(`must declare \`def Statement.${leanName} : Prop := ...\``);
+  if (defs.length !== 1) problems.push(`must contain exactly one declaration (found ${defs.length})`);
+  return problems;
+}
+
 export function staticChecks(source: string, leanName: string, allowedProofs: ReadonlySet<string> = new Set()): JudgeReason[] {
   const reasons: JudgeReason[] = [];
   for (const b of BANNED) {

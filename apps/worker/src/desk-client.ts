@@ -50,6 +50,29 @@ export interface Colony {
   recentlyChecked: { id: string; agentId: string | null; at: string | null }[];
 }
 
+export interface DecomposerContext {
+  programs: { slug: string; title: string; description: string; idPrefix: string; open: number; proposed: number }[];
+  definitions: { id: string; title: string; summary: string; draft: boolean; source: string }[];
+  statements: { id: string; title: string; leanStatement: string; status: string; program: string; rejectReason: string | null }[];
+  splitRequests: { id: number; lemmaId: string; reason: string; leanStatement: string; program: string }[];
+}
+
+export interface Proposal {
+  program: string;
+  title: string;
+  imports: string[];
+  prop: string;
+  rationale: string;
+  parentId?: string;
+  splitRequestId?: number;
+}
+
+export interface ProposalResult {
+  id: string;
+  status: string;
+  rejectReason: string | null;
+}
+
 export class DeskHttpError extends Error {
   constructor(readonly status: number, message: string, readonly reason?: string) {
     super(message);
@@ -168,6 +191,18 @@ export class DeskClient {
   }
   async search(q: string): Promise<string> {
     return (await this.req<{ results: string }>("GET", `/internal/search?${this.q({ q })}`))!.results;
+  }
+  async requestSplit(attemptId: number, reason: string): Promise<{ splitRequestId: number }> {
+    return (await this.req<{ splitRequestId: number }>("POST", `/internal/attempts/${attemptId}/split`, { agentId: this.agentId, reason }))!;
+  }
+  async decomposerContext(program?: string): Promise<DecomposerContext> {
+    return (await this.req<DecomposerContext>("GET", `/internal/decomposer/context?${this.q(program ? { program } : {})}`))!;
+  }
+  async propose(p: Proposal): Promise<ProposalResult> {
+    return (await this.req<ProposalResult>("POST", "/internal/proposals", { agentId: this.agentId, ...p }, this.timeouts.judgeMs))!;
+  }
+  recordOtherUsage(purpose: "decompose", call: { parts: UsagePart[]; requestId?: string }) {
+    return this.req("POST", "/internal/usage", { agentId: this.agentId, purpose, ...call });
   }
   async searchChecked(q: string): Promise<unknown[]> {
     return (await this.req<unknown[]>("GET", `/internal/checked?${this.q({ q })}`))!;

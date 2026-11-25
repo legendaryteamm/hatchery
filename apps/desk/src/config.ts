@@ -35,15 +35,47 @@ const Env = z.object({
   QUESTION_TTL_SECONDS: z.coerce.number().int().positive().default(1800),
   HANDOFF_OFFER_SECONDS: z.coerce.number().int().positive().default(600),
 
-  // ---- Phase 2: commit checked proofs to lean/Proofs/ (resolves open question 15)
-  /** commit = write + git commit; write = write file only; off = DB only. */
-  PROOF_COMMIT_MODE: z.enum(["commit", "write", "off"]).default("commit"),
+  // ---- Accepted proofs in lean/Proofs/ (see docs/deploy.md, "Where bot commits go")
+  /**
+   * sandbox (default) = commit into a throwaway clone, never the real checkout;
+   * commit = write + git commit in the real checkout (needs HATCHERY_REAL_RUN=1);
+   * write = write the file only, in the real checkout (needs HATCHERY_REAL_RUN=1);
+   * off = database only.
+   */
+  PROOF_COMMIT_MODE: z.enum(["sandbox", "commit", "write", "off"]).default("sandbox"),
+  /** Explicit "this is a real run": the only way the desk may write to the real checkout. */
+  HATCHERY_REAL_RUN: flag,
+  /** Where the sandbox clone goes (default: a new temp directory per desk start). */
+  PROOF_SANDBOX_DIR: z.string().optional(),
   PROOF_COMMIT_AUTHOR_NAME: z.string().default("Hatchery Judge"),
   PROOF_COMMIT_AUTHOR_EMAIL: z.string().default("judge@hatchery.invalid"),
+  /** Server only: push bot commits (deploy key via GIT_SSH_COMMAND). Never on a laptop. */
+  PROOF_PUSH: flag,
+  PROOF_PUSH_REMOTE: z.string().default("origin"),
+  PROOF_PUSH_BRANCH: z.string().default("main"),
+
+  // ---- Phase 3: review and decomposer
+  /** Where reviewers open the review tool (invite links point here). */
+  PUBLIC_SITE_URL: z.string().default("http://localhost:5173"),
+  REVIEW_SESSION_DAYS: z.coerce.number().int().positive().default(30),
+  REVIEW_INVITE_DAYS: z.coerce.number().int().positive().default(7),
+  MAX_PROPOSALS_PER_HOUR: z.coerce.number().int().nonnegative().default(20),
+}).superRefine((c, ctx) => {
+  if ((c.PROOF_COMMIT_MODE === "commit" || c.PROOF_COMMIT_MODE === "write") && !c.HATCHERY_REAL_RUN) {
+    ctx.addIssue({
+      code: "custom",
+      path: ["PROOF_COMMIT_MODE"],
+      message: `PROOF_COMMIT_MODE=${c.PROOF_COMMIT_MODE} writes to the real checkout. Set HATCHERY_REAL_RUN=1 to confirm this is a real run, or use PROOF_COMMIT_MODE=sandbox.`,
+    });
+  }
+  if (c.PROOF_PUSH && !(c.PROOF_COMMIT_MODE === "commit" && c.HATCHERY_REAL_RUN)) {
+    ctx.addIssue({ code: "custom", path: ["PROOF_PUSH"], message: "PROOF_PUSH=1 needs PROOF_COMMIT_MODE=commit and HATCHERY_REAL_RUN=1 (server only)." });
+  }
 });
 
 export type DeskConfig = z.infer<typeof Env>;
 
 export function loadConfig(env: NodeJS.ProcessEnv = process.env): DeskConfig {
-  return Env.parse(env);
+  // An empty variable (e.g. `ADMIN_TOKEN=` from docker compose) means "not set".
+  return Env.parse(Object.fromEntries(Object.entries(env).filter(([, v]) => v !== "")));
 }

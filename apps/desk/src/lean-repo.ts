@@ -28,6 +28,47 @@ export interface StatementFile {
   requiresMathlib: boolean;
   fileSha256: string;
   source: string;
+  /** Definition modules imported (`Defs.*`). */
+  defImports: string[];
+}
+
+export interface Declaration {
+  kind: string;
+  name: string;
+  doc: string;
+  code: string;
+}
+
+export interface DefinitionFile {
+  /** Module name, e.g. Defs.Core.Circuit. */
+  id: string;
+  path: string;
+  title: string;
+  summary: string;
+  source: string;
+  sourceSha256: string;
+  /** Other definition modules it imports. */
+  imports: string[];
+  requiresMathlib: boolean;
+  declarations: Declaration[];
+}
+
+export function importsOf(source: string): string[] {
+  return [...source.matchAll(/^[ \t]*import[ \t]+([A-Za-z0-9_.']+)/gm)].map((m) => m[1]!);
+}
+
+/** Top-level declarations with their doc comments, for reviewers. */
+export function declarationsOf(source: string): Declaration[] {
+  const out: Declaration[] = [];
+  const re = /(?:\/--([\s\S]*?)-\/\s*)?^(abbrev|def|structure|inductive|theorem|class)\s+([^\s:({\[]+)/gm;
+  const starts: { idx: number; kind: string; name: string; doc: string }[] = [];
+  for (const m of source.matchAll(re)) starts.push({ idx: m.index!, kind: m[2]!, name: m[3]!, doc: (m[1] ?? "").trim().replace(/\s+/g, " ") });
+  for (const [i, st] of starts.entries()) {
+    const end = i + 1 < starts.length ? starts[i + 1]!.idx : source.search(/^end Hatchery\.Defs/m) > st.idx ? source.search(/^end Hatchery\.Defs/m) : source.length;
+    const code = source.slice(st.idx, end).replace(/\/--[\s\S]*?-\/\s*$/, "").trim();
+    out.push({ kind: st.kind, name: st.name, doc: st.doc, code: code.replace(/^\/--[\s\S]*?-\/\s*/, "") });
+  }
+  return out;
 }
 
 export class LeanRepo {
@@ -39,10 +80,11 @@ export class LeanRepo {
 
   /**
    * Same algorithm as the runner Dockerfile:
-   *   find lean-toolchain Defs Statements (*.lean | lean-toolchain) | LC_ALL=C sort | xargs sha256sum | sha256sum
+   *   find lean-toolchain Defs (*.lean | lean-toolchain) | LC_ALL=C sort | xargs sha256sum | sha256sum
+   * (Statements are not baked into the image: the desk sends the approved ones with each request.)
    */
   trustedSha(): string {
-    const files = [join(this.dir, "lean-toolchain"), ...walk(join(this.dir, "Defs")), ...walk(join(this.dir, "Statements"))]
+    const files = [join(this.dir, "lean-toolchain"), ...walk(join(this.dir, "Defs"))]
       .map((p) => relative(this.dir, p))
       .filter((p) => p === "lean-toolchain" || p.endsWith(".lean"))
       .sort((a, b) => (a < b ? -1 : a > b ? 1 : 0));
@@ -66,9 +108,29 @@ export class LeanRepo {
       .filter((s): s is StatementFile => s !== null);
   }
 
-  statementFileSha(leanName: string): string | null {
-    const p = join(this.dir, "Statements", `${leanName}.lean`);
-    return existsSync(p) ? sha256(readFileSync(p)) : null;
+  /** Definition modules under Defs/ (the review units of the math advisor). */
+  definitionFiles(): DefinitionFile[] {
+    return walk(join(this.dir, "Defs"))
+      .filter((p) => p.endsWith(".lean"))
+      .sort()
+      .map((p) => {
+        const source = readFileSync(p, "utf8");
+        const rel = relative(this.dir, p);
+        const id = rel.replace(/\.lean$/, "").replaceAll("/", ".");
+        const header = (key: string) => new RegExp(`^${key}:[ \\t]*(.*)$`, "m").exec(source)?.[1]?.trim() ?? "";
+        const imports = importsOf(source);
+        return {
+          id,
+          path: `lean/${rel}`,
+          title: header("title") || id,
+          summary: header("summary"),
+          source,
+          sourceSha256: sha256(source),
+          imports: imports.filter((m) => m.startsWith("Defs.")),
+          requiresMathlib: imports.some((m) => m === "Mathlib" || m.startsWith("Mathlib.")),
+          declarations: declarationsOf(source),
+        };
+      });
   }
 
   private parseStatement(path: string): StatementFile | null {
@@ -87,9 +149,10 @@ export class LeanRepo {
       title: header("title"),
       dependsOn: header("depends_on").split(",").map((s) => s.trim()).filter(Boolean),
       leanStatement: def[1]!.trim(),
-      requiresMathlib: /^\s*import\s+Mathlib/m.test(source),
+      requiresMathlib: importsOf(source).some((m) => m === "Mathlib" || m.startsWith("Mathlib.") || m.startsWith("Defs.Mathlib.")),
       fileSha256: sha256(source),
       source,
+      defImports: importsOf(source).filter((m) => m.startsWith("Defs.")),
     };
   }
 

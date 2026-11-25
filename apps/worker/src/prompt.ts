@@ -17,6 +17,7 @@ How to work:
 - Use search_library to find exact lemma names before guessing them. Use search_checked to reuse what teammates proved.
 - Always run lean_check before submit_proof. When lean_check passes, submit the same source right away.
 - After 3 failed checks in a row you may ask_teammates once: say what you tried and exactly where it broke.
+- If the lemma is clearly too big for one proof, request_split once with the smaller steps you have in mind.
 - Keep notes short and specific: what you tried and where it broke. Future agents read them.
 - With teammates, be concise and specific. Do not explain Lean to the reader.`;
 

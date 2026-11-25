@@ -8,7 +8,9 @@ import { fileURLToPath } from "node:url";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { eq, sql } from "drizzle-orm";
 import { buildServer, Desk, LeanRepo, type JudgeClient } from "@hatchery/desk";
-import { judge, runnerInfo, searchLibrary, type JudgeConfig } from "@hatchery/judge";
+import { judge, runnerInfo, searchLibrary, statementCheck, type JudgeConfig } from "@hatchery/judge";
+import { Review } from "../../desk/src/review.ts";
+import { Decomposer } from "../src/decomposer.ts";
 import { addInflow, freshDb, REPO_LEAN_DIR, testConfig, WORKER_TOKEN } from "../../desk/test/helpers.ts";
 import * as schema from "../../desk/src/db/schema.ts";
 import { Agent } from "../src/agent.ts";
@@ -21,6 +23,7 @@ const inProcessJudge: JudgeClient = {
   check: (req) => judge(req, judgeConfig),
   info: () => runnerInfo(image),
   search: (q) => searchLibrary(image, q),
+  statementCheck: (req) => statementCheck(req, judgeConfig, { flavor: "lite" }),
 };
 const reference = (leanName: string) =>
   readFileSync(fileURLToPath(new URL(`../../desk/test/fixtures/reference-proofs/${leanName}.lean`, import.meta.url)), "utf8");
@@ -91,6 +94,31 @@ describe("one agent, end to end (scripted model, real judge)", () => {
     expect(checkedRow!.checkedSource).toBeNull();
     const verdict = (await db.select().from(schema.lemmas).where(eq(schema.lemmas.id, "L-core-001")))[0]!.checkedVerdict as { checkers: unknown };
     expect(verdict.checkers).toEqual({ judgecheck: "pass", leanchecker: "pass" });
+  });
+
+  it("decomposer, real Lean: a real statement reaches the review queue; a trivial one is auto-rejected", async () => {
+    const model = new FakeProvider(({ turn }) =>
+      turn === 0
+        ? [
+            call("propose_statement", { program: "circuit-lower-bounds", title: "Parity is not in AC0", imports: ["Defs.Core.Circuit"], prop: "¬ Hatchery.Defs.InAC0 Hatchery.Defs.parity", rationale: "Furst–Saxe–Sipser / Ajtai; the target of this program", parent_id: "", split_request_id: 0 }),
+            call("propose_statement", { program: "circuit-lower-bounds", title: "Parity of zero bits", imports: ["Defs.Core.Circuit"], prop: "Hatchery.Defs.parity 0 (fun i => i.elim0) = false", rationale: "sanity", parent_id: "", split_request_id: 0 }),
+          ]
+        : [call("finish", { summary: "done" })],
+    );
+    const d = new Decomposer(new DeskClient(deskUrl, WORKER_TOKEN, "decomposer-1"), model, {
+      maxTurns: 3, intervalMs: 0, sleepPollMs: 10, maxSessions: 1, killSwitch: () => false, log: () => {},
+    });
+    const r = await d.run();
+    expect(r.proposed).toEqual(["L-circ-001", "L-circ-002"]);
+    const rows = await fresh.db.select().from(schema.statements).where(sql`${schema.statements.origin} = 'decomposer'`).orderBy(schema.statements.id);
+    expect(rows.map((x) => [x.id, x.status])).toEqual([["L-circ-001", "proposed"], ["L-circ-002", "rejected"]]);
+    expect(rows[0]!.check).toMatchObject({ wellFormed: true, elaborates: true, trivial: false });
+    expect(rows[1]!.rejectReason).toMatch(/^trivial: closed automatically by (decide|trivial|simp)/);
+    const decomposeCalls = await fresh.db.select().from(schema.modelCalls).where(eq(schema.modelCalls.purpose, "decompose"));
+    expect(decomposeCalls.length).toBe(2);
+    // The proposal is not leasable: it waits for a human (and its definition is a draft).
+    const review = new Review(new Desk(fresh.db, inProcessJudge, new LeanRepo(REPO_LEAN_DIR), testConfig()), inProcessJudge);
+    expect((await review.statementDetail("L-circ-001")).approvalBlockers.join()).toMatch(/Defs.Core.Circuit is a draft/);
   });
 
   it("the run spend cap stops the agent before the next model call", async () => {

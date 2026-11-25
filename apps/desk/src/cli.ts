@@ -7,6 +7,12 @@
  *   report           print lemma statuses, attempts and spend
  *   pantry-mock-inflow <usd>   DEV ONLY: add a mock inflow (chain "mock") so agents have food
  *   kill-switch on|off         flip the shared kill switch
+ *   reviewer add "<name>" advisor|maintainer    create a reviewer; prints a one-time invite link
+ *   reviewer invite <id>       new invite link (old one stops working)
+ *   reviewer list | reviewer disable <id>
+ *   export-statements --to <dir>   write approved statement files (a maintainer commits them)
+ *   export-proofs --to <dir>       write checked proof files
+ * Exports into this checkout need HATCHERY_REAL_RUN=1 (dev runs never write to the real checkout).
  */
 import { mkdirSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
@@ -14,12 +20,32 @@ import { eq, sql } from "drizzle-orm";
 import { loadConfig } from "./config.ts";
 import { connect, runMigrations } from "./db/client.ts";
 import { randomUUID } from "node:crypto";
-import { lemmas, pantryInflows } from "./db/schema.ts";
+import { realpathSync } from "node:fs";
+import { resolve } from "node:path";
+import { lemmas, pantryInflows, reviewers, statements } from "./db/schema.ts";
+import { OWN_REPO_ROOT } from "./proof-committer.ts";
+import { Review } from "./review.ts";
 import { HttpJudgeClient } from "./judge-client.ts";
 import { LeanRepo } from "./lean-repo.ts";
 import { Desk } from "./service.ts";
 
 const cmd = process.argv[2];
+
+/** `--to <dir>`; refuses this checkout unless HATCHERY_REAL_RUN=1. */
+function exportDir(): string {
+  const i = process.argv.indexOf("--to");
+  const to = i > 0 ? process.argv[i + 1] : undefined;
+  if (!to) throw new Error("usage: desk export-proofs|export-statements --to <dir>  (the lean/ directory to write into)");
+  const abs = resolve(to);
+  let real = abs;
+  try {
+    real = realpathSync(abs);
+  } catch {}
+  if ((real === OWN_REPO_ROOT || real.startsWith(`${OWN_REPO_ROOT}/`)) && process.env.HATCHERY_REAL_RUN !== "1") {
+    throw new Error(`${abs} is inside this checkout: set HATCHERY_REAL_RUN=1 to confirm you want to write there`);
+  }
+  return abs;
+}
 const config = loadConfig({ DESK_WORKER_TOKEN: "cli-does-not-serve-requests", ...process.env });
 const { db, close } = connect(config.DATABASE_URL);
 const desk = new Desk(db, new HttpJudgeClient(config.JUDGE_URL, config.JUDGE_API_TOKEN), new LeanRepo(config.LEAN_DIR), config);
@@ -34,13 +60,34 @@ try {
   } else if (cmd === "recheck") {
     console.log({ marked: await desk.recheckScan() });
     console.log(await desk.runRechecks());
-  } else if (cmd === "export-proofs") {
-    const rows = await db.select().from(lemmas).where(eq(lemmas.status, "checked"));
-    mkdirSync(join(config.LEAN_DIR, "Proofs"), { recursive: true });
-    for (const l of rows) {
-      const file = join(config.LEAN_DIR, "Proofs", `${l.id.replaceAll("-", "_")}.lean`);
-      writeFileSync(file, l.checkedSource ?? "");
-      console.log(`${l.id} -> ${file} (checked at ${l.checkedCommit})`);
+  } else if (cmd === "export-proofs" || cmd === "export-statements") {
+    const dir = exportDir();
+    const folder = cmd === "export-proofs" ? "Proofs" : "Statements";
+    mkdirSync(join(dir, folder), { recursive: true });
+    const rows =
+      cmd === "export-proofs"
+        ? (await db.select().from(lemmas).where(eq(lemmas.status, "checked"))).map((l) => ({ id: l.id, content: l.checkedSource ?? "" }))
+        : (await db.select().from(statements).where(eq(statements.status, "approved"))).map((s) => ({ id: s.id, content: s.source }));
+    for (const r of rows) {
+      const file = join(dir, folder, `${r.id.replaceAll("-", "_")}.lean`);
+      writeFileSync(file, r.content);
+      console.log(`${r.id} -> ${file}`);
+    }
+  } else if (cmd === "reviewer") {
+    const review = new Review(desk, desk.judge);
+    const [sub, a, b] = process.argv.slice(3);
+    if (sub === "add" && a && (b === "advisor" || b === "maintainer")) {
+      const r = await review.addReviewer(a, b);
+      console.log(`reviewer #${r.reviewer.id} ${r.reviewer.name} (${r.reviewer.role})\nOne-time invite link (send it privately; valid ${config.REVIEW_INVITE_DAYS} days):\n${r.inviteUrl}`);
+    } else if (sub === "invite" && a) {
+      console.log(await review.newInvite(Number(a)));
+    } else if (sub === "disable" && a) {
+      await review.disableReviewer(Number(a));
+      console.log(`reviewer #${a} disabled; sessions ended`);
+    } else if (sub === "list") {
+      console.table((await db.select().from(reviewers)).map((r) => ({ id: r.id, name: r.name, role: r.role, disabled: !!r.disabledAt, inviteUsed: !!r.inviteUsedAt })));
+    } else {
+      throw new Error('usage: desk reviewer add "<name>" advisor|maintainer | invite <id> | disable <id> | list');
     }
   } else if (cmd === "report") {
     const r = await db.execute(sql`

@@ -40,13 +40,13 @@ RUN set -e; \
     elif [ "$FLAVOR" = "full" ]; then \
       rm lakefile.lite.toml && lake exe cache get && rm -rf /home/lean/.cache/mathlib; \
     else echo "FLAVOR must be 'full' or 'lite'" >&2; exit 1; fi
+# Only the toolchain pin, the definitions and the checker are baked in. Statements and checked
+# proofs arrive with every request (from the desk, which holds the approved versions).
 COPY --chown=lean:lean lean/Defs ./Defs
-COPY --chown=lean:lean lean/Statements ./Statements
-COPY --chown=lean:lean lean/Proofs ./Proofs
 COPY --chown=lean:lean lean/Judge ./Judge
-# Hash of the trusted inputs baked into this image (toolchain pin, Defs, Statements). The desk
-# computes the same hash from its checkout and refuses to judge if they differ (stale image).
-RUN find lean-toolchain Defs Statements -type f \( -name '*.lean' -o -name lean-toolchain \) \
+# Hash of the trusted inputs baked into this image (toolchain pin, Defs). The desk computes the
+# same hash from its checkout and refuses to judge if they differ (stale image).
+RUN find lean-toolchain Defs -type f \( -name '*.lean' -o -name lean-toolchain \) \
       | LC_ALL=C sort | xargs sha256sum | sha256sum | cut -d' ' -f1 > trusted.sha256
 RUN lake build
 # Resolve every path at build time so the read-only runtime never touches elan or lake.

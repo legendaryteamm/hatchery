@@ -262,7 +262,7 @@ describe("accepted proofs are committed to lean/Proofs/", () => {
 
   it("commits only the proof file, with the bot identity; the commit becomes the pinned commit", async () => {
     const { root, git } = gitRepo();
-    const { desk, db } = await setup({ leanDir: root, config: { PROOF_COMMIT_MODE: "commit", GIT_COMMIT: "" } });
+    const { desk, db } = await setup({ leanDir: root, config: { PROOF_COMMIT_MODE: "commit", HATCHERY_REAL_RUN: "1", GIT_COMMIT: "" } });
     // Unrelated work in progress in the checkout must not be swept into the bot commit.
     writeFileSync(join(root, "Judge", "Main.lean"), readFileSync(join(root, "Judge", "Main.lean"), "utf8") + "\n-- wip\n");
     writeFileSync(join(root, "notes.txt"), "staged wip\n");
@@ -287,7 +287,7 @@ describe("accepted proofs are committed to lean/Proofs/", () => {
 
   it("a failed re-check removes the file in a commit; reconcile repairs drift", async () => {
     const { root, git } = gitRepo();
-    const { desk, db, judge, repo } = await setup({ leanDir: root, config: { PROOF_COMMIT_MODE: "commit", GIT_COMMIT: "" } });
+    const { desk, db, judge, repo } = await setup({ leanDir: root, config: { PROOF_COMMIT_MODE: "commit", HATCHERY_REAL_RUN: "1", GIT_COMMIT: "" } });
     await desk.registerAgent("a", "claude-opus-5-5");
     await desk.lease("a");
     const id = await desk.startAttempt("a", "L-core-001");
@@ -310,7 +310,7 @@ describe("accepted proofs are committed to lean/Proofs/", () => {
     await desk.submit(id2, "a", "-- PASS two", "");
     git("-c", "user.name=t", "-c", "user.email=t@example.invalid", "rm", "-q", "Proofs/L_core_002.lean");
     git("-c", "user.name=t", "-c", "user.email=t@example.invalid", "commit", "-qm", "oops");
-    expect(await desk.reconcileProofs()).toEqual({ written: ["L_core_002"], removed: [] });
+    expect(await desk.reconcileProofs()).toEqual({ written: ["L_core_002"], removed: [], deferred: [] });
     expect(readFileSync(join(root, "Proofs", "L_core_002.lean"), "utf8")).toBe("-- PASS two");
     expect(git("status", "--porcelain", "--", "Proofs")).toBe("");
     const [{ n }] = (await db.execute(sql`select count(*)::int as n from lemmas where status = 'checked'`)) as unknown as [{ n: number }];

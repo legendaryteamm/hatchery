@@ -51,6 +51,8 @@ describe("leases and attempts", () => {
     expect((await db.select().from(modelCalls)).length).toBe(2);
     expect(await desk.spentSince("agent-1", new Date(0))).toBe("0.029800");
     expect(await eventTypes(db)).toEqual([
+      "definition_synced", "definition_synced", "definition_synced", // Defs.Core.{Circuit,Formula,Resolution}; the Mathlib one is synced too
+      "definition_synced",
       "statement_synced", "statement_synced", "statement_synced", "statement_synced", "statement_synced",
       "agent_registered", "leased", "attempt_started", "model_call", "model_call", "submitted", "checked",
     ]);

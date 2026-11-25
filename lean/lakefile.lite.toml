@@ -1,19 +1,13 @@
 # LITE flavor: Lean core only, no Mathlib. Used for judge development/tests.
 # The runner Dockerfile swaps this in when FLAVOR=lite. Keep targets in sync with lakefile.toml.
 name = "hatchery"
-defaultTargets = ["Defs", "Statements", "Proofs", "judgecheck"]
+defaultTargets = ["DefsCore", "judgecheck"]
 
 [[lean_lib]]
-name = "Defs"
-globs = ["Defs.+"]
+name = "DefsCore"
+globs = ["Defs.Core.+"]
 
-[[lean_lib]]
-name = "Statements"
-globs = ["Statements.+"]
 
-[[lean_lib]]
-name = "Proofs"
-globs = ["Proofs.+"]
 
 [[lean_exe]]
 name = "judgecheck"

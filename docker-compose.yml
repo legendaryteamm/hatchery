@@ -1,4 +1,5 @@
-# Local development stack (Phase 2): postgres, Lean judge, desk, and a fleet of workers (opt-in).
+# Local development stack (Phase 3): postgres, Lean judge, desk; workers + decomposer are opt-in.
+# The review tool runs from source: `pnpm web:dev` (http://localhost:5173, proxies /api to the desk).
 # web and indexer are added in later phases (see BUILD_PROMPT.md section 3).
 #
 #   JUDGE_FLAVOR=lite docker compose up -d desk            # postgres + judge + desk (no model calls)
@@ -84,12 +85,21 @@ services:
       RUNWAY_TARGET_DAYS: ${RUNWAY_TARGET_DAYS:-30}
       KILL_SWITCH: ${KILL_SWITCH:-0}
       ADMIN_TOKEN: ${ADMIN_TOKEN:-}
-      PROOF_COMMIT_MODE: ${PROOF_COMMIT_MODE:-commit}
+      # Default: accepted proofs go to a throwaway clone inside the container. Writing to the real
+      # checkout needs PROOF_COMMIT_MODE=commit AND HATCHERY_REAL_RUN=1 AND REPO_MOUNT_MODE=rw.
+      PROOF_COMMIT_MODE: ${PROOF_COMMIT_MODE:-sandbox}
+      HATCHERY_REAL_RUN: ${HATCHERY_REAL_RUN:-0}
+      PUBLIC_SITE_URL: ${PUBLIC_SITE_URL:-http://localhost:5173}
+      # Server only (docs/deploy.md): push bot commits with a repo-scoped deploy key.
+      PROOF_PUSH: ${PROOF_PUSH:-0}
+      PROOF_PUSH_REMOTE: ${PROOF_PUSH_REMOTE:-origin}
+      PROOF_PUSH_BRANCH: ${PROOF_PUSH_BRANCH:-main}
+      GIT_SSH_COMMAND: ${GIT_SSH_COMMAND:-}
     # The desk writes and commits accepted proofs into the checkout, so it runs as the checkout's owner.
     user: "${HATCHERY_UID:-1000}:${HATCHERY_GID:-1000}"
     volumes:
-      # The checkout: trusted statements/defs are read from lean/, accepted proofs committed to lean/Proofs/.
-      - .:/repo
+      # The checkout, READ-ONLY unless a real run sets REPO_MOUNT_MODE=rw.
+      - .:/repo:${REPO_MOUNT_MODE:-ro}
     ports:
       - "127.0.0.1:4200:4200"
 
@@ -113,6 +123,26 @@ services:
       AGENT_MAX_TURNS: ${AGENT_MAX_TURNS:-20}
       AGENT_EFFORT: ${AGENT_EFFORT:-high}
       WORKER_MAX_RUN_USD: ${WORKER_MAX_RUN_USD:-0}
+      KILL_SWITCH: ${KILL_SWITCH:-0}
+    restart: "no"
+
+  # Opt-in: `--profile agents`. Proposes statements; a human approves them in the review tool.
+  decomposer:
+    profiles: ["agents"]
+    build:
+      context: .
+      dockerfile: apps/worker/Dockerfile
+    image: hatchery-worker:dev
+    command: ["node", "--import", "tsx", "src/decomposer-main.ts"]
+    depends_on:
+      desk:
+        condition: service_started
+    environment:
+      DESK_URL: http://desk:4200
+      DESK_WORKER_TOKEN: ${DESK_WORKER_TOKEN:-}
+      ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:-}
+      AGENT_MODEL: ${AGENT_MODEL:-}
+      DECOMPOSER_INTERVAL_SECONDS: ${DECOMPOSER_INTERVAL_SECONDS:-3600}
       KILL_SWITCH: ${KILL_SWITCH:-0}
     restart: "no"
 

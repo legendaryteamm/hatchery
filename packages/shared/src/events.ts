@@ -31,6 +31,14 @@ export const EVENT_TYPES = [
   "handoff",
   "lemma_reused",
   "proof_committed",
+  // Phase 3
+  "definition_synced",
+  "definition_reviewed",
+  "statement_proposed",
+  "statement_reviewed",
+  "statement_approved",
+  "statement_rejected",
+  "split_requested",
 ] as const;
 
 /** Why an agent is not allowed to call a model right now. */

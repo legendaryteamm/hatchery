@@ -10,6 +10,7 @@ import { and, asc, desc, eq, gt, sql } from "drizzle-orm";
 import { z } from "zod";
 import { LemmaIdSchema, MAX_PROOF_BYTES, MESSAGE_LIMITS, SLEEP_REASONS } from "@hatchery/shared";
 import { agents, attempts, events, leases, lemmas, messages, programs, statements } from "./db/schema.ts";
+import { Review, type Reviewer } from "./review.ts";
 import { Desk, DeskError } from "./service.ts";
 
 const AgentId = z.string().regex(/^[a-z0-9][a-z0-9-]{1,62}$/, "agent ids: lowercase letters, digits, hyphens");
@@ -65,7 +66,36 @@ const Schemas = {
   search: z.object({ q: z.string().regex(/^[\x20-\x7e]{2,100}$/) }),
   checked: z.object({ q: z.string().min(2).max(100) }),
   killSwitch: z.object({ on: z.boolean(), by: z.string().min(1).max(64) }),
+  split: z.object({ agentId: AgentId, reason: z.string().min(1).max(MESSAGE_LIMITS.body) }),
+  usageOnly: z.object({ agentId: AgentId, purpose: z.enum(["decompose"]), parts: z.array(Part).min(1).max(10), requestId: z.string().max(200).optional() }),
+  proposal: z.object({
+    agentId: AgentId,
+    program: z.string().min(1).max(64),
+    title: z.string().min(3).max(200),
+    imports: z.array(z.string().regex(/^(Mathlib|Defs)(\.[A-Za-z0-9_']+)*$/, "imports: Mathlib.* or Defs.* only")).max(20),
+    prop: z.string().min(1).max(4000),
+    rationale: z.string().max(2000).default(""),
+    parentId: LemmaIdSchema.optional(),
+    splitRequestId: z.number().int().positive().optional(),
+  }),
+  join: z.object({ token: z.string().min(20).max(200) }),
+  decision: z.object({
+    decision: z.enum(["approve", "request_changes", "reject", "comment"]),
+    comment: z.string().max(5000).default(""),
+    sha256: z.string().regex(/^[0-9a-f]{64}$/),
+  }),
 };
+
+const SESSION_COOKIE = "hatchery_review";
+
+function readCookie(req: FastifyRequest, name: string): string | undefined {
+  const raw = req.headers.cookie ?? "";
+  for (const part of raw.split(";")) {
+    const [k, ...v] = part.trim().split("=");
+    if (k === name) return decodeURIComponent(v.join("="));
+  }
+  return undefined;
+}
 
 function tokenOk(header: string | undefined, token: string): boolean {
   const given = Buffer.from(header?.replace(/^Bearer /, "") ?? "");
@@ -73,9 +103,10 @@ function tokenOk(header: string | undefined, token: string): boolean {
   return given.length === want.length && timingSafeEqual(given, want);
 }
 
-export function buildServer(desk: Desk): FastifyInstance {
+export function buildServer(desk: Desk, review: Review = new Review(desk, desk.judge)): FastifyInstance {
   const app = Fastify({ logger: { level: process.env.LOG_LEVEL ?? "info" }, bodyLimit: MAX_PROOF_BYTES * 2 });
   const db = desk.db;
+  const secureCookie = desk.config.PUBLIC_SITE_URL.startsWith("https://");
 
   app.setErrorHandler((err, req, reply) => {
     if (err instanceof DeskError) return reply.code(err.status).send({ error: err.message, reason: err.reason });
@@ -175,7 +206,12 @@ export function buildServer(desk: Desk): FastifyInstance {
       const [l] = await db.select().from(lemmas).where(and(eq(lemmas.id, proof[1]!.replaceAll("_", "-")), eq(lemmas.status, "checked")));
       return l?.checkedSource ? { path, content: l.checkedSource } : reply.code(404).send({ error: "only checked proofs can be read" });
     }
-    if (!/^(Defs|Statements)\/[A-Za-z0-9_/]+\.lean$/.test(path) || path.includes("..")) {
+    const stmt = /^Statements\/(L_[a-z0-9_]+)\.lean$/.exec(path);
+    if (stmt) {
+      const [s] = await db.select().from(statements).where(and(eq(statements.leanName, stmt[1]!), eq(statements.status, "approved")));
+      return s ? { path, content: s.source } : reply.code(404).send({ error: "only approved statements can be read" });
+    }
+    if (!/^Defs\/[A-Za-z0-9_/]+\.lean$/.test(path) || path.includes("..")) {
       return reply.code(400).send({ error: "readable: Defs/*.lean, Statements/*.lean, Proofs/<checked>.lean" });
     }
     try {
@@ -189,6 +225,67 @@ export function buildServer(desk: Desk): FastifyInstance {
     return { results: await desk.judge.search(q) };
   }));
   app.get("/internal/checked", internal(async (req) => desk.searchChecked(Schemas.checked.parse(req.query).q)));
+
+  // ---------------------------------------------------------------- internal: decomposer and splits
+  app.get("/internal/decomposer/context", internal(async (req) => {
+    const q = z.object({ agentId: AgentId, program: z.string().max(64).optional() }).parse(req.query);
+    return review.decomposerContext(q.program);
+  }));
+  app.post("/internal/proposals", internal(async (req) => {
+    const b = Schemas.proposal.parse(req.body);
+    return review.propose(b.agentId, b);
+  }));
+  app.post("/internal/usage", internal(async (req) => {
+    const b = Schemas.usageOnly.parse(req.body);
+    return review.recordDecomposerUsage(b.agentId, b.parts, b.requestId);
+  }));
+  app.post("/internal/attempts/:id/split", internal(async (req) => {
+    const b = Schemas.split.parse(req.body);
+    return review.requestSplit(b.agentId, idParam(req), b.reason);
+  }));
+
+  // ---------------------------------------------------------------- review tool (advisors, maintainers)
+  /**
+   * Reviewers sign in with a one-time invite link (no developer account needed). The session is an
+   * httpOnly, SameSite=Strict cookie. Every state-changing request must also carry the header
+   * `x-hatchery-review: 1`, which a cross-site form cannot send.
+   */
+  const reviewerOf = async (req: FastifyRequest): Promise<Reviewer | null> => review.reviewerForSession(readCookie(req, SESSION_COOKIE));
+  const reviewerRoute = (write: boolean, fn: (req: FastifyRequest, reply: FastifyReply, r: Reviewer) => Promise<unknown>) =>
+    async (req: FastifyRequest, reply: FastifyReply) => {
+      const r = await reviewerOf(req);
+      if (!r) return reply.code(401).send({ error: "please open your invite link to sign in" });
+      if (write && req.headers["x-hatchery-review"] !== "1") return reply.code(403).send({ error: "missing x-hatchery-review header" });
+      return fn(req, reply, r);
+    };
+  const cookie = (value: string, maxAgeSeconds: number) =>
+    `${SESSION_COOKIE}=${encodeURIComponent(value)}; Path=/; HttpOnly; SameSite=Strict; Max-Age=${maxAgeSeconds}${secureCookie ? "; Secure" : ""}`;
+
+  app.post("/review/join", async (req, reply) => {
+    if (req.headers["x-hatchery-review"] !== "1") return reply.code(403).send({ error: "missing x-hatchery-review header" });
+    const { token } = Schemas.join.parse(req.body);
+    const s = await review.redeemInvite(token);
+    reply.header("set-cookie", cookie(s.sessionToken, Math.floor((s.expiresAt.getTime() - Date.now()) / 1000)));
+    return { name: s.reviewer.name, role: s.reviewer.role };
+  });
+  app.post("/review/logout", async (req, reply) => {
+    const t = readCookie(req, SESSION_COOKIE);
+    if (t) await review.endSession(t);
+    reply.header("set-cookie", cookie("", 0));
+    return { ok: true };
+  });
+  app.get("/review/me", reviewerRoute(false, async (_req, _reply, r) => ({ name: r.name, role: r.role })));
+  app.get("/review/queue", reviewerRoute(false, async () => review.queue()));
+  app.get("/review/definitions/:id", reviewerRoute(false, async (req) => review.definitionDetail((req.params as { id: string }).id)));
+  app.post("/review/definitions/:id", reviewerRoute(true, async (req, _reply, r) => {
+    const b = Schemas.decision.parse(req.body);
+    return review.reviewDefinition(r, (req.params as { id: string }).id, b.decision, b.comment, b.sha256);
+  }));
+  app.get("/review/statements/:id", reviewerRoute(false, async (req) => review.statementDetail(LemmaIdSchema.parse((req.params as { id: string }).id))));
+  app.post("/review/statements/:id", reviewerRoute(true, async (req, _reply, r) => {
+    const b = Schemas.decision.parse(req.body);
+    return review.reviewStatement(r, LemmaIdSchema.parse((req.params as { id: string }).id), b.decision, b.comment, b.sha256);
+  }));
 
   // ---------------------------------------------------------------- admin
   app.get("/admin/kill-switch", admin(async () => (await desk.budget(null)).killSwitch));
@@ -249,6 +346,26 @@ export function buildServer(desk: Desk): FastifyInstance {
       return { ...a, checkedTotal: s?.checked ?? 0, attemptsTotal: s?.attempts ?? 0, spentUsd: spend.find((x) => x.agent_id === a.id)?.total ?? "0.000000" };
     });
   });
+
+  /** Definitions, with their review state: the site must show drafts as drafts. */
+  app.get("/definitions", async () => review.definitionList());
+  app.get("/definitions/:id", async (req) => {
+    const d = await review.definitionDetail((req.params as { id: string }).id);
+    return { ...d, history: d.history.map(({ reviewer, role, ts, decision, comment }) => ({ reviewer, role, ts, decision, comment })) };
+  });
+  /** Statements by status (proposed ones are in review; rejected ones keep their reason). */
+  app.get("/statements", async (req) => {
+    const q = z.object({ status: z.enum(["proposed", "approved", "rejected"]).optional() }).parse(req.query);
+    const states = await desk.definitionStates();
+    const rows = await db
+      .select({ id: statements.id, title: statements.title, status: statements.status, program: programs.slug, leanStatement: statements.leanStatement, origin: statements.origin, defImports: statements.defImports, rejectReason: statements.rejectReason, approvedBy: statements.approvedBy })
+      .from(statements)
+      .innerJoin(programs, eq(programs.id, statements.programId))
+      .where(q.status ? eq(statements.status, q.status) : undefined)
+      .orderBy(asc(statements.id));
+    return rows.map((r) => ({ ...r, usesDraftDefinition: r.defImports.some((d) => !states.get(d)?.effective) }));
+  });
+  app.get("/programs", async () => db.select().from(programs).orderBy(asc(programs.sort)));
 
   app.get("/messages", async (req) => {
     const q = z.object({ after: z.coerce.number().int().nonnegative().default(0), limit: z.coerce.number().int().min(1).max(500).default(100) }).parse(req.query);

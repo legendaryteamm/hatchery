@@ -71,6 +71,22 @@ export class FakeJudge implements JudgeClient {
   async search(q: string) {
     return `Init/Fake.lean:1:${q}`;
   }
+  statementChecks: string[] = [];
+  /** Stand-in: "BROKEN" in the prop = does not elaborate; "TRIVIAL" = closed by decide. */
+  async statementCheck(req: { lemmaId: string; source: string }) {
+    this.statementChecks.push(req.lemmaId);
+    const imports = [...req.source.matchAll(/^import\s+(\S+)/gm)].map((m) => m[1]!);
+    return {
+      lemmaId: req.lemmaId,
+      wellFormed: /def Statement\.L_[a-z0-9_]+ : Prop :=/.test(req.source),
+      elaborates: !req.source.includes("BROKEN"),
+      trivial: req.source.includes("TRIVIAL"),
+      trivialBy: req.source.includes("TRIVIAL") ? "decide" : null,
+      errors: req.source.includes("BROKEN") ? ["unknown identifier 'BROKEN'"] : [],
+      defImports: imports.filter((m) => m.startsWith("Defs.")),
+      requiresMathlib: imports.some((m) => m.startsWith("Mathlib") || m.startsWith("Defs.Mathlib")),
+    };
+  }
   async check(req: JudgeRequestInput): Promise<JudgeVerdict> {
     this.requests.push(req);
     const pass = req.source.includes("-- PASS");

@@ -18,10 +18,19 @@ export const ProofDepSchema = z.object({
 });
 export type ProofDep = z.infer<typeof ProofDepSchema>;
 
+/** An approved statement file (`Statements/<L>.lean`), sent by the desk as a trusted input. */
+export const StatementSourceSchema = z.object({
+  lemmaId: LemmaIdSchema,
+  source: z.string().min(1).max(MAX_PROOF_BYTES),
+});
+export type StatementSource = z.infer<typeof StatementSourceSchema>;
+
 export const JudgeRequestSchema = z.object({
   lemmaId: LemmaIdSchema,
   source: z.string().min(1).max(MAX_PROOF_BYTES),
   deps: z.array(ProofDepSchema).max(MAX_PROOF_DEPS).default([]),
+  /** The target's statement plus the statement of every dependency. */
+  statements: z.array(StatementSourceSchema).min(1).max(MAX_PROOF_DEPS + 1),
 });
 export type JudgeRequestInput = z.input<typeof JudgeRequestSchema>;
 export type JudgeRequest = z.infer<typeof JudgeRequestSchema>;
@@ -81,6 +90,28 @@ export const JudgeVerdictSchema = z.object({
   checkedAt: z.string(),
 });
 export type JudgeVerdict = z.infer<typeof JudgeVerdictSchema>;
+
+/** A proposed statement, checked before it reaches the human review queue (section 7). */
+export const StatementCheckRequestSchema = z.object({
+  lemmaId: LemmaIdSchema,
+  source: z.string().min(1).max(50_000),
+});
+export type StatementCheckRequest = z.infer<typeof StatementCheckRequestSchema>;
+
+export const StatementCheckResultSchema = z.object({
+  lemmaId: z.string(),
+  /** Passed the static rules (imports, banned words, exactly one `def Statement.<L> : Prop`). */
+  wellFormed: z.boolean(),
+  /** Elaborates in Lean with `sorry` as the proof. */
+  elaborates: z.boolean(),
+  /** Closed automatically within the time limit: auto-rejected. */
+  trivial: z.boolean(),
+  trivialBy: z.string().nullable(),
+  errors: z.array(z.string()),
+  defImports: z.array(z.string()),
+  requiresMathlib: z.boolean(),
+});
+export type StatementCheckResult = z.infer<typeof StatementCheckResultSchema>;
 
 /** The only axioms a checked proof may use. */
 export const ALLOWED_AXIOMS = ["propext", "Classical.choice", "Quot.sound"] as const;
