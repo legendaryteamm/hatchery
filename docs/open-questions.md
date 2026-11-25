@@ -30,3 +30,7 @@ Questions for the maintainer. Each has the default chosen for now.
 | 24 | Definitions for monotone circuits (sunflowers, CLIQUE) and barriers (oracle machines, natural properties) are not written yet. Write them next, or let the decomposer work on the three programs that have definitions first? | Not written yet. | 3+ |
 | 25 | Statement duplicate detection compares whitespace-normalized text, so alpha-equivalent or reordered statements are not caught. | Text-based; reviewers catch the rest. | 3 |
 | 26 | Reviewer sign-in uses one-time invite links (30-day sessions), so an advisor needs no GitHub account. Keep this alongside GitHub OAuth in Phase 6? | Keep both. | 6 |
+| 27 | The site loads its fonts (Bricolage Grotesque, Silkscreen) from Google Fonts, as the reference does. Self-host them to avoid the third-party request? | Google Fonts for now. | 4 / 7 |
+| 28 | The core warm-up lemmas get a small "warm-up bench" under the judge, since they are not one of the four research camps. Keep it, or hide warm-up agents once research lemmas exist? | Keep the bench. | 4 |
+| 29 | On a checked proof, only the 4 nearest free teammates run over to cheer (all of a big camp would pile up at the judge). | 4 nearest. | 4 |
+| 30 | The pantry bowl's fill = runway / 30 days (full when nothing has been spent yet, empty at $0). | As stated. | 4 |

@@ -10,7 +10,7 @@ import { connect, runMigrations, type Db, type DbTimeouts } from "../src/db/clie
 import type { JudgeClient, JudgeInfo } from "../src/judge-client.ts";
 import { LeanRepo } from "../src/lean-repo.ts";
 import { Desk } from "../src/service.ts";
-import { pantryInflows } from "../src/db/schema.ts";
+import { events, pantryInflows } from "../src/db/schema.ts";
 
 const ADMIN = process.env.TEST_DATABASE_ADMIN_URL ?? "postgres://hatchery:hatchery-dev-only@127.0.0.1:5433/postgres";
 export const REPO_LEAN_DIR = fileURLToPath(new URL("../../../lean", import.meta.url));
@@ -109,9 +109,11 @@ export class FakeJudge implements JudgeClient {
 
 /** Mock pantry inflow (dev/test only). */
 export async function addInflow(db: Db, usd: number, ts = new Date()): Promise<void> {
-  await db.insert(pantryInflows).values({
-    txHash: `test-${randomBytes(6).toString("hex")}`, chain: "mock", amountNative: String(usd), amountUsd: usd.toFixed(6),
-    usdRateSource: "test", ts,
+  // Same as Desk.recordInflow (row + pantry_inflow event), without needing a Desk.
+  await db.transaction(async (tx) => {
+    const txHash = `test-${randomBytes(6).toString("hex")}`;
+    await tx.insert(pantryInflows).values({ txHash, chain: "mock", amountNative: String(usd), amountUsd: usd.toFixed(6), usdRateSource: "test", ts });
+    await tx.insert(events).values({ type: "pantry_inflow", payload: { chain: "mock", amountUsd: usd.toFixed(6), txHash } });
   });
 }
 

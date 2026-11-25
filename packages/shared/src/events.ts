@@ -39,6 +39,8 @@ export const EVENT_TYPES = [
   "statement_approved",
   "statement_rejected",
   "split_requested",
+  // Phase 4
+  "pantry_inflow",
 ] as const;
 
 /** Why an agent is not allowed to call a model right now. */

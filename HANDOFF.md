@@ -31,5 +31,11 @@ The items below need a person: credentials, money, or an outside service.
       account, a write deploy key for this repo, and the Actions variable `PROOF_BOT_LOGIN`. Never push from a laptop.
 - [ ] **Commit approved statements** to `lean/Statements/` from time to time (`pnpm desk export-statements --to lean`
       with `HATCHERY_REAL_RUN=1`, review, commit). Proofs of those lemmas are committed after that.
+- [ ] **Look at the site** with the mock colony (no API key, throwaway database, no commits):
+      `docker compose up -d --wait postgres`, then `pnpm mock:colony` and `pnpm web:dev`, open http://localhost:5173.
+      Check it on your phone too (light and dark). Ctrl-C on the mock colony drops its database.
+- [ ] **Delete the pre-rewrite backup refs** once you are happy with the new commit identity (they still
+      hold the old email): `git update-ref -d refs/backup/pre-identity-rewrite && git update-ref -d refs/original/refs/heads/main`,
+      then `git reflog expire --expire=now --all && git gc --prune=now`.
 - [ ] Out of scope for Claude Code, as always (BUILD_PROMPT.md section 13): the token, wallets, fee routing,
       legal review, paying API bills, marketing.

@@ -22,7 +22,7 @@ import { connect, runMigrations } from "./db/client.ts";
 import { randomUUID } from "node:crypto";
 import { realpathSync } from "node:fs";
 import { resolve } from "node:path";
-import { lemmas, pantryInflows, reviewers, statements } from "./db/schema.ts";
+import { lemmas, reviewers, statements } from "./db/schema.ts";
 import { OWN_REPO_ROOT } from "./proof-committer.ts";
 import { Review } from "./review.ts";
 import { HttpJudgeClient } from "./judge-client.ts";
@@ -103,7 +103,7 @@ try {
   } else if (cmd === "pantry-mock-inflow") {
     const usd = Number(process.argv[3]);
     if (!(usd > 0)) throw new Error("usage: desk pantry-mock-inflow <usd>");
-    await db.insert(pantryInflows).values({
+    await desk.recordInflow({
       txHash: `mock-${randomUUID()}`, chain: "mock", amountNative: String(usd), amountUsd: usd.toFixed(6),
       usdRateSource: "mock adapter (1 native = 1 USD); development only", ts: new Date(),
     });

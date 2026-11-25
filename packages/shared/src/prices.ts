@@ -43,7 +43,10 @@ export interface TokenUsage {
   cacheReadTokens: number;
 }
 
-export function priceTable(env: Record<string, string | undefined> = process.env): Record<string, ModelPrice> {
+const runtimeEnv = (): Record<string, string | undefined> =>
+  (globalThis as { process?: { env: Record<string, string | undefined> } }).process?.env ?? {};
+
+export function priceTable(env: Record<string, string | undefined> = runtimeEnv()): Record<string, ModelPrice> {
   if (!env.PRICE_TABLE_JSON) return PRICES;
   return { ...PRICES, ...(JSON.parse(env.PRICE_TABLE_JSON) as Record<string, ModelPrice>) };
 }

@@ -54,6 +54,7 @@ describe("leases and attempts", () => {
       "definition_synced", "definition_synced", "definition_synced", // Defs.Core.{Circuit,Formula,Resolution}; the Mathlib one is synced too
       "definition_synced",
       "statement_synced", "statement_synced", "statement_synced", "statement_synced", "statement_synced",
+      "pantry_inflow", // the test pantry top-up is recorded like any inflow
       "agent_registered", "leased", "attempt_started", "model_call", "model_call", "submitted", "checked",
     ]);
     expect(await desk.budget("agent-1")).toMatchObject({ allowed: true, agentSpentUsd: "0.029800", globalSpentUsd: "0.029800" });

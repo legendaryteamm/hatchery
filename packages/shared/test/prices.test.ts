@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { costMicroUsd, microsToUsd, petIdentity, priceTable } from "../src/index.ts";
+import { costMicroUsd, levelFor, microsToUsd, petIdentity, priceTable, SHELLS, SPECIES } from "../src/index.ts";
 
 describe("prices", () => {
   it("computes cost from real token counts in micro-dollars", () => {
@@ -21,10 +21,20 @@ describe("prices", () => {
   });
 });
 
+describe("sha256 (browser-safe) matches node:crypto", () => {
+  it.each(["", "abc", "hatchery-pet:agent-1", "x".repeat(1000), "ünïcödé ✓"])("%#", async (input) => {
+    const { createHash } = await import("node:crypto");
+    const { sha256Bytes } = await import("../src/sha256.ts");
+    expect(Buffer.from(sha256Bytes(input)).toString("hex")).toBe(createHash("sha256").update(input).digest("hex"));
+  });
+});
+
 describe("pet identity", () => {
   it("is deterministic and well-formed", () => {
     expect(petIdentity("agent-1")).toEqual(petIdentity("agent-1"));
     expect(petIdentity("agent-1")).not.toEqual(petIdentity("agent-2"));
-    expect(petIdentity("x").shellColor).toMatch(/^#[0-9a-f]{6}$/);
+    expect(SHELLS).toContain(petIdentity("x").shellColor);
+    expect(SPECIES).toContain(petIdentity("x").species);
+    expect([0, 7, 8, 15, 16, 27, 28, 100].map(levelFor)).toEqual([1, 1, 2, 2, 3, 3, 4, 4]);
   });
 });

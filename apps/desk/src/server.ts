@@ -12,6 +12,7 @@ import { LemmaIdSchema, MAX_PROOF_BYTES, MESSAGE_LIMITS, SLEEP_REASONS } from "@
 import { agents, attempts, events, leases, lemmas, messages, programs, statements } from "./db/schema.ts";
 import { Review, type Reviewer } from "./review.ts";
 import { Desk, DeskError } from "./service.ts";
+import { agentCard, colonySnapshot, feed, graveyard, pantrySummary } from "./views.ts";
 
 const AgentId = z.string().regex(/^[a-z0-9][a-z0-9-]{1,62}$/, "agent ids: lowercase letters, digits, hyphens");
 const Source = z.string().min(1).max(MAX_PROOF_BYTES);
@@ -104,8 +105,26 @@ function tokenOk(header: string | undefined, token: string): boolean {
 }
 
 export function buildServer(desk: Desk, review: Review = new Review(desk, desk.judge)): FastifyInstance {
-  const app = Fastify({ logger: { level: process.env.LOG_LEVEL ?? "info" }, bodyLimit: MAX_PROOF_BYTES * 2 });
+  const app = Fastify({ logger: { level: process.env.LOG_LEVEL ?? "info" }, bodyLimit: MAX_PROOF_BYTES * 2, trustProxy: desk.config.TRUST_PROXY });
   const db = desk.db;
+  // Public routes are rate limited per client (fixed one-minute window). Workers (token),
+  // reviewers (session) and admins are not.
+  const windows = new Map<string, { start: number; n: number }>();
+  app.addHook("onRequest", async (req, reply) => {
+    if (/^\/(internal|review|admin)\//.test(req.url)) return;
+    const now = Date.now();
+    let w = windows.get(req.ip);
+    if (!w || now - w.start >= 60_000) {
+      w = { start: now, n: 0 };
+      windows.set(req.ip, w);
+      if (windows.size > 50_000) for (const [k, v] of windows) if (now - v.start >= 60_000) windows.delete(k);
+    }
+    if (++w.n > desk.config.RATE_LIMIT_PER_MINUTE) {
+      reply.header("retry-after", Math.ceil((w.start + 60_000 - now) / 1000));
+      return reply.code(429).send({ error: "too many requests; try again in a minute" });
+    }
+  });
+  const streams = new Map<string, number>();
   const secureCookie = desk.config.PUBLIC_SITE_URL.startsWith("https://");
 
   app.setErrorHandler((err, req, reply) => {
@@ -347,6 +366,25 @@ export function buildServer(desk: Desk, review: Review = new Review(desk, desk.j
     });
   });
 
+  // ---------------------------------------------------------------- public: the site (Phase 4)
+  app.get("/colony", async () => colonySnapshot(desk));
+  app.get("/feed", async (req) => {
+    const q = z.object({
+      before: z.coerce.number().int().positive().optional(),
+      after: z.coerce.number().int().nonnegative().optional(),
+      limit: z.coerce.number().int().min(1).max(200).default(50),
+      agent: AgentId.optional(),
+      lemma: LemmaIdSchema.optional(),
+    }).parse(req.query);
+    return feed(desk, { before: q.before, after: q.after, limit: q.limit, agentId: q.agent, lemmaId: q.lemma });
+  });
+  app.get("/agents/:id", async (req, reply) => {
+    const id = AgentId.parse((req.params as { id: string }).id);
+    return (await agentCard(desk, id)) ?? reply.code(404).send({ error: "no such agent" });
+  });
+  app.get("/graveyard", async () => graveyard(desk));
+  app.get("/pantry", async () => pantrySummary(desk));
+
   /** Definitions, with their review state: the site must show drafts as drafts. */
   app.get("/definitions", async () => review.definitionList());
   app.get("/definitions/:id", async (req) => {
@@ -381,15 +419,23 @@ export function buildServer(desk: Desk, review: Review = new Review(desk, desk.j
   app.get("/events/stream", (req, reply) => {
     const q = z.object({ after: z.coerce.number().int().nonnegative().optional() }).parse(req.query);
     let last = Number(req.headers["last-event-id"] ?? q.after ?? 0) || 0;
+    const open = streams.get(req.ip) ?? 0;
+    if (open >= desk.config.MAX_STREAMS_PER_CLIENT) return reply.code(429).send({ error: "too many open event streams from this client" });
+    streams.set(req.ip, open + 1);
     reply.hijack();
     reply.raw.writeHead(200, { "content-type": "text/event-stream", "cache-control": "no-cache", connection: "keep-alive" });
     let closed = false;
-    req.raw.on("close", () => (closed = true));
+    req.raw.on("close", () => {
+      closed = true;
+      const n = (streams.get(req.ip) ?? 1) - 1;
+      if (n > 0) streams.set(req.ip, n);
+      else streams.delete(req.ip);
+    });
     const tick = async () => {
       while (!closed) {
         const rows = await db.select().from(events).where(gt(events.id, last)).orderBy(asc(events.id)).limit(200);
         for (const e of rows) {
-          reply.raw.write(`id: ${e.id}\nevent: ${e.type}\ndata: ${JSON.stringify(e)}\n\n`);
+          reply.raw.write(`id: ${e.id}\ndata: ${JSON.stringify(e)}\n\n`); // type is in the data: EventSource.onmessage gets every event
           last = e.id;
         }
         if (!rows.length) reply.raw.write(": keep-alive\n\n");

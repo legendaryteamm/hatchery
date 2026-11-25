@@ -20,7 +20,7 @@ import {
 import { budgetStatus, type BudgetStatus } from "./budget.ts";
 import type { DeskConfig } from "./config.ts";
 import type { Db, Tx } from "./db/client.ts";
-import { agents, attempts, definitions, events, leases, lemmas, messages, modelCalls, programs, reuses, settings, statements } from "./db/schema.ts";
+import { agents, attempts, definitions, events, leases, lemmas, messages, modelCalls, pantryInflows, programs, reuses, settings, statements } from "./db/schema.ts";
 import type { JudgeClient, JudgeInfo } from "./judge-client.ts";
 import { sha256, type LeanRepo } from "./lean-repo.ts";
 import { ProofCommitter } from "./proof-committer.ts";
@@ -228,6 +228,14 @@ export class Desk {
       payload: { reason, agentSpentUsd: b.agentSpentUsd, perAgentCapUsd: b.perAgentCapUsd, globalSpentUsd: b.globalSpentUsd, globalCapUsd: b.globalCapUsd },
     });
     return true;
+  }
+
+  /** Record money coming into the pantry (mock adapter now; the chain indexer in Phase 5). */
+  async recordInflow(i: { txHash: string; chain: string; amountNative: string; amountUsd: string; usdRateSource: string; ts: Date }): Promise<void> {
+    await this.db.transaction(async (tx) => {
+      await tx.insert(pantryInflows).values(i);
+      await emit(tx, "pantry_inflow", { payload: { chain: i.chain, amountUsd: i.amountUsd, txHash: i.txHash } });
+    });
   }
 
   // ================================================================ statements

@@ -60,6 +60,14 @@ const Env = z.object({
   REVIEW_SESSION_DAYS: z.coerce.number().int().positive().default(30),
   REVIEW_INVITE_DAYS: z.coerce.number().int().positive().default(7),
   MAX_PROPOSALS_PER_HOUR: z.coerce.number().int().nonnegative().default(20),
+
+  // ---- Phase 4: public site
+  /** Requests per minute per client on public routes (workers and reviewers are not limited). */
+  RATE_LIMIT_PER_MINUTE: z.coerce.number().int().positive().default(300),
+  /** Concurrent live event streams per client. */
+  MAX_STREAMS_PER_CLIENT: z.coerce.number().int().positive().default(4),
+  /** Behind a reverse proxy (Phase 7), trust X-Forwarded-For for the client address. */
+  TRUST_PROXY: flag,
 }).superRefine((c, ctx) => {
   if ((c.PROOF_COMMIT_MODE === "commit" || c.PROOF_COMMIT_MODE === "write") && !c.HATCHERY_REAL_RUN) {
     ctx.addIssue({

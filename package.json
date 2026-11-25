@@ -3,7 +3,9 @@
   "private": true,
   "license": "Apache-2.0",
   "packageManager": "pnpm@9.15.9",
-  "engines": { "node": ">=20.11" },
+  "engines": {
+    "node": ">=20.11"
+  },
   "scripts": {
     "test": "pnpm -r --workspace-concurrency=1 test",
     "typecheck": "pnpm -r typecheck",
@@ -16,6 +18,7 @@
     "worker:start": "pnpm --filter @hatchery/worker start",
     "decomposer:start": "pnpm --filter @hatchery/worker decomposer",
     "web:dev": "pnpm --filter @hatchery/web dev",
-    "web:build": "pnpm --filter @hatchery/web build"
+    "web:build": "pnpm --filter @hatchery/web build",
+    "mock:colony": "pnpm --filter @hatchery/worker mock:colony"
   }
 }
