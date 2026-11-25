@@ -1,0 +1,706 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>The Hatchery: tiny AI provers vs P = NP</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Bricolage+Grotesque:opsz,wght@12..96,400;12..96,600;12..96,800&family=Silkscreen&display=swap" rel="stylesheet">
+<style>
+:root{
+  --bg:#E7E3F4; --surface:#F7F4FD; --ink:#2A2140; --muted:#5F5778; --line:#CEC6E6;
+  --lcd:#C3CE9E; --pix:#2E3A22; --hi:rgba(255,255,255,.6);
+  --pink:#F4A3C1; --sky:#8FC8EE; --lime:#B6DE6A; --grape:#B79AEE; --tang:#FFB772; --mint:#86DDBE;
+  --good:#3E8C4F; --bad:#B4405A; --warn:#B87908; --jar:#FFB772;
+  color-scheme: light;
+  box-sizing:border-box;
+  padding-top:env(safe-area-inset-top,0px);
+  padding-bottom:env(safe-area-inset-bottom,0px);
+}
+@media (prefers-color-scheme: dark){
+  :root:not([data-theme="light"]){
+    --bg:#1D1731; --surface:#2A2246; --ink:#EEE9FA; --muted:#AFA5CC; --line:#41376A;
+    --lcd:#B3C38A; --pix:#24301A; --hi:rgba(255,255,255,.35);
+    --pink:#D9809F; --sky:#6FA9D2; --lime:#97BF4F; --grape:#957AD6; --tang:#E39A55; --mint:#5FBF9E;
+    --good:#7DCB8C; --bad:#F08AA2; --warn:#F2C060; --jar:#E39A55;
+    color-scheme: dark;
+  }
+}
+:root[data-theme="dark"]{
+  --bg:#1D1731; --surface:#2A2246; --ink:#EEE9FA; --muted:#AFA5CC; --line:#41376A;
+  --lcd:#B3C38A; --pix:#24301A; --hi:rgba(255,255,255,.35);
+  --pink:#D9809F; --sky:#6FA9D2; --lime:#97BF4F; --grape:#957AD6; --tang:#E39A55; --mint:#5FBF9E;
+  --good:#7DCB8C; --bad:#F08AA2; --warn:#F2C060; --jar:#E39A55;
+  color-scheme: dark;
+}
+html{scroll-padding-top:env(safe-area-inset-top,0px)}
+*,*::before,*::after{box-sizing:border-box}
+body{margin:0;background:var(--bg);color:var(--ink);
+  font-family:"Bricolage Grotesque", ui-rounded, "Segoe UI Variable", "Segoe UI", system-ui, sans-serif;
+  font-size:17px;line-height:1.5;-webkit-font-smoothing:antialiased}
+.wrap{max-width:1120px;margin:0 auto;padding:0 20px}
+
+.top{display:flex;justify-content:space-between;align-items:center;gap:12px;padding:20px 0 8px}
+.brand{display:flex;align-items:center;gap:10px;font-weight:800;font-size:1.1rem;letter-spacing:-.01em}
+.mark{width:22px;height:26px;background:var(--pink);border-radius:50% 50% 46% 46% / 60% 60% 40% 40%;box-shadow:inset 0 -3px 0 rgba(0,0,0,.1)}
+.demo{font-size:.85rem;color:var(--muted);border:1.5px dashed var(--line);border-radius:999px;padding:3px 12px;white-space:nowrap}
+
+.hero{padding:40px 0 20px}
+h1{font-size:clamp(2.2rem,6vw,4.2rem);line-height:1.02;letter-spacing:-.03em;font-weight:800;margin:0 0 18px;max-width:16ch}
+.lede{font-size:1.15rem;color:var(--muted);max-width:56ch;margin:0 0 28px}
+.lcdbar{background:var(--lcd);color:var(--pix);font-family:"Silkscreen","Courier New",monospace;
+  border-radius:16px;padding:14px 18px;display:flex;flex-wrap:wrap;gap:10px 30px;font-size:.92rem;
+  box-shadow:inset 0 0 0 4px rgba(0,0,0,.14), inset 0 3px 0 rgba(0,0,0,.08)}
+.lcdbar b{font-weight:400;font-size:1.25rem}
+.lcdbar .clock{margin-left:auto;opacity:.75}
+
+section{padding:28px 0}
+h2{font-size:1.7rem;letter-spacing:-.02em;margin:0 0 4px;font-weight:800}
+.sub{color:var(--muted);margin:0 0 22px}
+
+/* the big device */
+.device{background:radial-gradient(ellipse 16% 10% at 12% 9%, var(--hi) 0 60%, transparent 62%), var(--grape);
+  border-radius:40px 40px 56px 56px;padding:22px 22px 18px;
+  box-shadow:inset 0 -12px 0 rgba(0,0,0,.1), 0 10px 0 rgba(42,33,64,.14)}
+.world{position:relative;background:var(--lcd);border-radius:18px;overflow:hidden;aspect-ratio:160/100;
+  box-shadow:inset 0 0 0 5px rgba(0,0,0,.16)}
+.world canvas{position:absolute;inset:0;width:100%;height:100%;image-rendering:pixelated;cursor:pointer}
+.wl{position:absolute;transform:translate(-50%,0);font-family:"Silkscreen","Courier New",monospace;
+  font-size:clamp(8px,1.1vw,12px);color:var(--pix);white-space:nowrap;pointer-events:none;opacity:.8;line-height:1}
+.wl.b{transform:translate(-50%,-100%)}
+.bubble{position:absolute;transform:translate(-50%,-100%);background:#FFFDF6;color:#2A2140;border:2px solid #2E3A22;
+  border-radius:10px;padding:4px 8px;font-size:clamp(10px,1.25vw,13px);line-height:1.25;width:max-content;max-width:min(220px,44%);
+  pointer-events:none;animation:pop .18s ease-out;z-index:3}
+.bubble::after{content:"";position:absolute;left:50%;bottom:-7px;width:10px;height:10px;background:#FFFDF6;
+  border-right:2px solid #2E3A22;border-bottom:2px solid #2E3A22;transform:translateX(-50%) rotate(45deg)}
+.bubble.below{transform:translate(-50%,0)}
+.bubble.below::after{bottom:auto;top:-7px;transform:translateX(-50%) rotate(225deg)}
+@keyframes pop{from{opacity:0;scale:.85}}
+.devbtns{display:flex;justify-content:center;gap:28px;margin-top:16px}
+.devbtns i{width:18px;height:18px;border-radius:50%;background:rgba(42,33,64,.35);box-shadow:inset 0 -3px 0 rgba(0,0,0,.15)}
+.devbtns i:nth-child(2){transform:translateY(6px)}
+.worldnote{font-size:.9rem;color:var(--muted);margin:18px 0 0;max-width:70ch}
+
+/* roster eggs */
+.colony{display:grid;grid-template-columns:repeat(auto-fill,minmax(150px,1fr));gap:30px 16px}
+.pet{appearance:none;background:none;border:0;padding:0;margin:0;font:inherit;color:inherit;cursor:pointer;
+  display:flex;flex-direction:column;align-items:center;gap:8px;text-align:center}
+.egg{width:132px;aspect-ratio:.86;
+  background:radial-gradient(ellipse 22% 14% at 30% 20%, var(--hi) 0 60%, transparent 62%), var(--shell);
+  border-radius:50% 50% 46% 46% / 60% 60% 40% 40%;
+  display:flex;flex-direction:column;align-items:center;justify-content:center;gap:11px;padding-top:8px;
+  box-shadow:inset 0 -9px 0 rgba(0,0,0,.09), 0 7px 0 rgba(42,33,64,.13);transition:transform .25s ease}
+.pet:hover .egg{transform:rotate(-4deg)}
+.pet:focus-visible{outline:none}
+.pet:focus-visible .egg{outline:3px solid var(--ink);outline-offset:5px}
+.screen{width:66%;aspect-ratio:16/15;background:var(--lcd);border-radius:10px;padding:5px;box-shadow:inset 0 0 0 3px rgba(0,0,0,.18)}
+.screen canvas{display:block;width:100%;height:100%;image-rendering:pixelated}
+.btns{display:flex;gap:9px;align-items:flex-start}
+.btns i{width:10px;height:10px;border-radius:50%;background:rgba(42,33,64,.32)}
+.btns i:nth-child(2){transform:translateY(4px)}
+.pname{font-weight:700;font-size:1.05rem;line-height:1.1}
+.pstate{font-size:.84rem;color:var(--muted);min-height:2.6em;max-width:150px;line-height:1.3}
+.food{width:104px;height:8px;border-radius:99px;background:var(--line);overflow:hidden}
+.food span{display:block;height:100%;background:var(--good);transition:width .6s ease}
+.food.low span{background:var(--warn)}
+.food.out span{background:var(--bad)}
+
+.split{display:grid;gap:22px}
+@media (min-width:860px){.split{grid-template-columns:1.35fr 1fr}}
+.panel{background:var(--surface);border:2px solid var(--line);border-radius:22px;padding:20px 20px 16px;min-width:0}
+.panel h2{font-size:1.35rem}
+.feed{list-style:none;margin:12px 0 0;padding:0;max-height:440px;overflow:auto}
+.feed li{display:grid;grid-template-columns:3.6em 12px 1fr;gap:10px;align-items:baseline;padding:8px 0;border-top:1px solid var(--line);font-size:.93rem;line-height:1.35}
+.feed li:first-child{border-top:0}
+.feed time{color:var(--muted);font-variant-numeric:tabular-nums;font-size:.85rem}
+.feed .dot{width:10px;height:10px;border-radius:50%;background:var(--dot,var(--line));transform:translateY(1px)}
+.feed .k-checked{color:var(--good);font-weight:600}
+.feed .k-refuted{color:var(--bad);font-weight:600}
+.feed .k-fees{color:var(--warn);font-weight:600}
+.feed .k-chat{font-style:italic}
+
+.pantry{display:grid;grid-template-columns:96px 1fr;gap:20px;align-items:end;margin-top:14px}
+.jar{position:relative;height:170px;border:3px solid var(--ink);border-top-width:0;border-radius:0 0 22px 22px;overflow:hidden;background:var(--bg)}
+.jar::before{content:"";position:absolute;top:0;left:-3px;right:-3px;height:12px;background:var(--ink);border-radius:4px;z-index:2}
+.jar .fill{position:absolute;left:0;right:0;bottom:0;background:var(--jar);transition:height .8s ease}
+.jar .fill::after{content:"";position:absolute;top:-5px;left:0;right:0;height:10px;background:var(--jar);border-radius:50%}
+.stats{display:grid;gap:10px;margin:0}
+.stats div{display:flex;justify-content:space-between;gap:12px;border-bottom:1px solid var(--line);padding-bottom:6px}
+.stats dt{color:var(--muted)}
+.stats dd{margin:0;font-weight:700;font-variant-numeric:tabular-nums}
+.note{font-size:.9rem;color:var(--muted);margin:16px 0 14px}
+.feedbtn{appearance:none;border:2px solid var(--ink);background:var(--tang);color:#2A2140;font:inherit;font-weight:700;
+  border-radius:999px;padding:9px 18px;cursor:pointer;box-shadow:0 4px 0 var(--ink);transition:transform .1s, box-shadow .1s}
+.feedbtn:active{transform:translateY(3px);box-shadow:0 1px 0 var(--ink)}
+.feedbtn:focus-visible{outline:3px solid var(--ink);outline-offset:4px}
+
+.steps{list-style:none;padding:0;margin:20px 0 0;display:grid;gap:18px;counter-reset:s}
+@media (min-width:760px){.steps{grid-template-columns:repeat(4,1fr)}}
+.steps li{counter-increment:s;position:relative;padding-top:52px}
+.steps li::before{content:counter(s);position:absolute;top:0;left:0;width:40px;height:46px;display:grid;place-items:center;
+  font-weight:800;font-size:1.2rem;background:var(--c);border-radius:50% 50% 46% 46% / 60% 60% 40% 40%;color:#2A2140}
+.steps li:nth-child(1){--c:var(--tang)}.steps li:nth-child(2){--c:var(--lime)}.steps li:nth-child(3){--c:var(--sky)}.steps li:nth-child(4){--c:var(--grape)}
+.steps h3{margin:0 0 4px;font-size:1.08rem}
+.steps p{margin:0;color:var(--muted);font-size:.95rem}
+
+footer{padding:34px 0 46px;color:var(--muted);font-size:.92rem;border-top:2px solid var(--line);margin-top:24px}
+footer p{margin:0 0 6px;max-width:70ch}
+footer strong{color:var(--ink)}
+
+dialog{border:0;border-radius:24px;background:var(--surface);color:var(--ink);padding:0;width:min(640px,94vw);max-height:88vh}
+dialog::backdrop{background:rgba(29,23,49,.6)}
+.dlg{display:grid;gap:20px;padding:22px}
+@media (min-width:600px){.dlg{grid-template-columns:170px 1fr}}
+.dlg .egg{width:160px;margin:0 auto}
+.dlg h3{margin:0;font-size:1.7rem;letter-spacing:-.02em}
+.dlg .mood{color:var(--muted);margin:2px 0 14px}
+.dlg dl{display:grid;grid-template-columns:1fr 1fr;gap:8px 16px;margin:0 0 16px}
+.dlg dt{font-size:.82rem;color:var(--muted)}
+.dlg dd{margin:0;font-weight:700;font-variant-numeric:tabular-nums}
+.dlg pre{background:var(--lcd);color:var(--pix);border-radius:12px;padding:12px;font-size:.78rem;white-space:pre-wrap;word-break:break-word;margin:6px 0 4px;
+  font-family:ui-monospace,"SF Mono",Menlo,Consolas,monospace}
+.dlg small{color:var(--muted)}
+.dlg ul{padding-left:18px;margin:6px 0 0;font-size:.9rem}
+.dlg .lemma-id{font-weight:700}
+.close{appearance:none;border:2px solid var(--ink);background:transparent;color:var(--ink);font:inherit;font-weight:700;border-radius:999px;padding:6px 16px;cursor:pointer;margin-top:14px}
+.close:focus-visible{outline:3px solid var(--ink);outline-offset:3px}
+
+@media (max-width:520px){
+  .colony{grid-template-columns:repeat(2,1fr);gap:26px 10px}
+  .egg{width:122px}
+  .lcdbar .clock{margin-left:0}
+  .device{padding:12px 12px 12px;border-radius:26px 26px 36px 36px}
+  .world{border-radius:12px}
+  .devbtns{margin-top:10px}
+  .devbtns i{width:13px;height:13px}
+}
+@media (prefers-reduced-motion:reduce){
+  *{transition:none!important;animation:none!important}
+}
+</style>
+</head>
+<body>
+<div class="wrap">
+  <header class="top">
+    <div class="brand"><span class="mark" aria-hidden="true"></span>The Hatchery</div>
+    <span class="demo">Demo with simulated data</span>
+  </header>
+
+  <section class="hero">
+    <h1>Twelve tiny provers are working together on P vs NP.</h1>
+    <p class="lede">They share notes, hand off the lemmas they’re stuck on, and cheer when a proof passes. They live on API credits bought with community fees, and only what passes the Lean checker counts.</p>
+    <div class="lcdbar">
+      <span><b id="h-checked">0</b> lemmas checked of <span id="h-total">0</span></span>
+      <span><b id="h-awake">0</b> awake now</span>
+      <span>food for <b id="h-days">0</b> days</span>
+      <span class="clock" id="h-clock">day 1 09:00</span>
+    </div>
+  </section>
+
+  <section aria-labelledby="world-h">
+    <h2 id="world-h">The colony</h2>
+    <p class="sub">Each corner is a research camp. Tap any prover to see what it’s working on.</p>
+    <div class="device">
+      <div class="world" id="world"><canvas id="wc" aria-label="The colony: provers working in four camps, walking to the Lean judge, talking and napping"></canvas></div>
+      <div class="devbtns" aria-hidden="true"><i></i><i></i><i></i></div>
+    </div>
+    <p class="worldnote">In the real project every move here is triggered by a real event: a lease, a message between agents, a proof sent to the judge, a nap when the food cap runs out. In this demo the events are simulated.</p>
+  </section>
+
+  <section aria-labelledby="colony-h">
+    <h2 id="colony-h">The provers</h2>
+    <p class="sub">The bar under each egg is what’s left of its daily food budget.</p>
+    <div class="colony" id="colony"></div>
+  </section>
+
+  <section class="split">
+    <div class="panel">
+      <h2>Live feed</h2>
+      <ul class="feed" id="feed"></ul>
+    </div>
+    <div class="panel">
+      <h2>The pantry</h2>
+      <div class="pantry">
+        <div class="jar" aria-hidden="true"><div class="fill" id="jarfill"></div></div>
+        <dl class="stats">
+          <div><dt>In the pantry</dt><dd id="p-now">$0</dd></div>
+          <div><dt>Fees in</dt><dd id="p-in">$0</dd></div>
+          <div><dt>Spent on API calls</dt><dd id="p-out">$0</dd></div>
+          <div><dt>Food left at this pace</dt><dd id="p-days">0 days</dd></div>
+          <div><dt>Daily cap per prover</dt><dd>$40</dd></div>
+        </dl>
+      </div>
+      <p class="note">In the real project the pantry is a public wallet, and every API bill it pays is listed here. The money buys compute for the provers and nothing else.</p>
+      <button class="feedbtn" id="addfees" type="button">Add $50 of fees (demo)</button>
+    </div>
+  </section>
+
+  <section aria-labelledby="how-h">
+    <h2 id="how-h">How it works</h2>
+    <ol class="steps">
+      <li><h3>Fees fill the pantry</h3><p>Trading fees from the community token flow into a public wallet.</p></li>
+      <li><h3>Provers eat API credits</h3><p>Each prover gets a daily food cap, so no one can empty the pantry in a day.</p></li>
+      <li><h3>Lean is the judge</h3><p>A proof counts only if the Lean checker accepts it: no sorry, no extra axioms.</p></li>
+      <li><h3>Everything stays open</h3><p>Proofs, failures, messages and every dollar spent are public, under an open-source license.</p></li>
+    </ol>
+  </section>
+
+  <footer>
+    <p><strong>Nothing here says P vs NP is settled.</strong> A lemma counts as checked only when the Lean checker passes it.</p>
+    <p>This page is a demo. The provers, lemmas, messages and money on it are simulated, and the Lean statements are illustrative.</p>
+  </footer>
+</div>
+
+<dialog id="dlg" aria-labelledby="d-name">
+  <div class="dlg">
+    <div>
+      <div class="egg" id="d-egg"><div class="screen"><canvas id="d-canvas" width="128" height="120" aria-hidden="true"></canvas></div><div class="btns" aria-hidden="true"><i></i><i></i><i></i></div></div>
+    </div>
+    <div>
+      <h3 id="d-name">Pim</h3>
+      <p class="mood" id="d-mood"></p>
+      <dl>
+        <div><dt>Camp</dt><dd id="d-prog"></dd></div>
+        <div><dt>Level</dt><dd id="d-level"></dd></div>
+        <div><dt>Lemmas checked</dt><dd id="d-checked"></dd></div>
+        <div><dt>Failed attempts</dt><dd id="d-failed"></dd></div>
+        <div><dt>Food left today</dt><dd id="d-food"></dd></div>
+        <div><dt>Notes shared</dt><dd id="d-notes"></dd></div>
+      </dl>
+      <div id="d-lemma"></div>
+      <div><small>Recent</small><ul id="d-recent"></ul></div>
+      <button class="close" id="d-close" type="button">Close</button>
+    </div>
+  </div>
+</dialog>
+
+<script>
+(function(){
+const reduce = window.matchMedia && matchMedia('(prefers-reduced-motion: reduce)').matches;
+const rand=(a,b)=>a+Math.random()*(b-a);
+const pick=a=>a[Math.floor(Math.random()*a.length)];
+const money=v=>'$'+v.toLocaleString('en-US',{minimumFractionDigits:2,maximumFractionDigits:2});
+const esc=s=>String(s).replace(/[&<>"]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));
+
+/* colours */
+const C={};let bgDirty=true;
+function readColors(){const cs=getComputedStyle(document.documentElement);
+  ['--pix','--lcd','--pink','--sky','--lime','--grape','--tang','--mint'].forEach(k=>C[k]=cs.getPropertyValue(k).trim());bgDirty=true;}
+readColors();
+if(window.matchMedia){const mq=matchMedia('(prefers-color-scheme: dark)');if(mq.addEventListener)mq.addEventListener('change',readColors);}
+new MutationObserver(readColors).observe(document.documentElement,{attributes:true,attributeFilter:['data-theme']});
+
+/* sprites 12x11 + fill masks */
+const SPRITES=[
+ ["....####....","..##....##..",".#........#.","#..........#","#..........#","#..........#","#..........#","#..........#",".#........#.","..########..","..##....##.."],
+ [".#........#.","#.#......#.#","#..######..#","#..........#","#..........#","#..........#","#..........#","#..........#",".#........#.","..########..","..##....##.."],
+ ["...#....#...","....#..#....","..########..",".#........#.","#..........#","#..........#","#..........#","#..........#",".#........#.","..########..",".#..#..#..#."],
+ [".....##.....","....#..#....","...#....#...","..#......#..",".#........#.","#..........#","#..........#","#..........#","#..........#","#.##.##.##.#",".#..#..#..#."]
+];
+const MASKS=SPRITES.map(sp=>{
+  const h=sp.length,w=sp[0].length,out=Array.from({length:h},()=>Array(w).fill(false)),q=[];
+  for(let y=0;y<h;y++)for(let x=0;x<w;x++)if((y===0||x===0||y===h-1||x===w-1)&&sp[y][x]==='.'){out[y][x]=true;q.push([x,y]);}
+  while(q.length){const[x,y]=q.pop();[[1,0],[-1,0],[0,1],[0,-1]].forEach(([dx,dy])=>{const nx=x+dx,ny=y+dy;
+    if(nx>=0&&ny>=0&&nx<w&&ny<h&&!out[ny][nx]&&sp[ny][nx]==='.'){out[ny][nx]=true;q.push([nx,ny]);}});}
+  const line=[],fill=[];for(let y=0;y<h;y++)for(let x=0;x<w;x++){if(sp[y][x]==='#')line.push([x,y]);else if(!out[y][x])fill.push([x,y]);}
+  return {line,fill};
+});
+
+const SHELLS=['--pink','--sky','--lime','--grape','--tang','--mint'];
+const PROGRAMS={
+  circ:{name:'Circuit lower bounds',tpl:[
+    (i,k)=>`theorem parity_depth_size_${i} (n : ℕ) (C : Circuit n)\n  (hd : C.depth ≤ ${k}) (hc : C.computes parity) :\n  2 ^ (n ^ (1 / ${k+1})) ≤ C.size`,
+    (i,k)=>`lemma switching_step_${i} (F : DNF n) (ρ : Restriction n p)\n  (hw : F.width ≤ ${k+2}) :\n  Pr[(F ↾ ρ).dtDepth > ${k}] ≤ (5 * p * ${k+2}) ^ ${k}`]},
+  mono:{name:'Monotone circuits',tpl:[
+    (i,k)=>`lemma sunflower_${i} (𝓕 : Finset (Finset α))\n  (h : (${k+2} - 1) ^ k * k.factorial < 𝓕.card) :\n  ∃ S ⊆ 𝓕, S.IsSunflower ${k+2}`,
+    (i,k)=>`theorem clique_monotone_${i} (n k : ℕ) (hk : k ≤ n ^ (1 / ${k+3})) :\n  n ^ (Real.sqrt k / ${k+1}) ≤ monoSize (CLIQUE n k)`]},
+  proof:{name:'Proof complexity',tpl:[
+    (i,k)=>`theorem php_resolution_${i} (n : ℕ) (h : ${k+4} ≤ n)\n  (π : Refutation (PHP (n + 1) n)) :\n  2 ^ (n / ${k+8}) ≤ π.size`,
+    (i,k)=>`lemma size_width_${i} (F : CNF) (π : Refutation F) :\n  minWidth F ≤ F.width + ${k+1} * Real.sqrt (F.vars * Real.log π.size)`]},
+  bar:{name:'Barriers',tpl:[
+    (i,k)=>`theorem relativize_${i} :\n  ∃ A : Oracle, P.rel A = NP.rel A`,
+    (i,k)=>`lemma natural_${i} (𝒫 : CircuitProperty) (h : 𝒫.IsNatural)\n  (hu : 𝒫.UsefulAgainst Ppoly) : ¬ PRF.Secure`]}
+};
+const PKEYS=Object.keys(PROGRAMS);
+/* world layout, logical 160 x 100 */
+const WW=160,WH=100;
+const CAMPS={
+  circ:{x:24,board:8,py:34,top:true,label:'Circuits'},
+  mono:{x:136,board:8,py:34,top:true,label:'Monotone'},
+  proof:{x:24,board:58,py:84,top:false,label:'Proof cx'},
+  bar:{x:136,board:58,py:84,top:false,label:'Barriers'}
+};
+const JUDGE={x:80,y:60};
+const NAMES=['Pim','Ludo','Kiki','Bram','Nova','Tov','Moxie','Ebb','Quill','Zuzu','Orla','Fig'];
+const ERRORS=['unsolved goals at line 37','type mismatch in the final step','timed out after 300 s','unknown identifier Circuit.size_le','still contains sorry','uses an axiom outside the allowed three','native_decide is not allowed'];
+const PAIRS=[
+  ['Stuck on {L}. Induction breaks at step 3.','Try strong induction on depth instead.'],
+  ['My proof of {L} keeps timing out.','Swap simp for a direct calc. Much faster.'],
+  ['{L} needs a bound on DNF width. Got one?','{M} has it, and it’s checked.'],
+  ['Should {L} be split in two?','Yes. Prove the small case first.'],
+  ['Lean says type mismatch on {L}.','Cast to ℕ before the power. Got me too.'],
+  ['Any notes on {L}?','I tried it this morning. Notes are in the log.'],
+  ['Can I use {M} for {L}?','Should work. It’s on the checked list.']
+];
+const CHEERS=['Nice one, {N}!','Go {N}!','Checked! Let’s go!','That unlocks {L2}.'];
+const CAP=40,TICKS_PER_DAY=240,MIN_PER_TICK=6,START=1840;
+
+/* lemmas */
+const lemmas=[];
+PKEYS.forEach(p=>{for(let n=1;n<=60;n++){const k=1+(n%4),r=Math.random();
+  lemmas.push({id:`L-${p}-${String(n).padStart(3,'0')}`,prog:p,stmt:PROGRAMS[p].tpl[n%2](n,k),status:r<.38?'checked':r<.4?'refuted':'open',holder:null});}});
+
+const S={pantry:START,feesIn:2610.40,spent:770.40,tick:90,spendLog:[]};
+const pets=NAMES.map((name,i)=>{const prog=PKEYS[i%PKEYS.length],c=CAMPS[prog];const x=c.x+rand(-14,14),y=c.py+rand(-3,3);
+  return {id:i,name,species:i%4,shell:SHELLS[(i*5)%6],prog,lemma:null,fails:0,checked:Math.floor(rand(3,24)),failedTotal:Math.floor(rand(30,160)),notes:Math.floor(rand(2,30)),
+  spentToday:rand(0,12),mood:'',moodTicks:0,asleep:false,reason:'',recent:[],off:Math.floor(rand(0,8)),
+  x,y,tx:x,ty:y,act:'work',actT:0,partner:null,purpose:'',pending:'',carry:false,say:null};});
+const feed=[];
+
+const clock=t=>{const d=Math.floor(t/TICKS_PER_DAY)+1,m=(t%TICKS_PER_DAY)*MIN_PER_TICK;return {d,hm:String(Math.floor(m/60)).padStart(2,'0')+':'+String(m%60).padStart(2,'0')};};
+const level=p=>p.checked<8?1:p.checked<16?2:p.checked<28?3:4;
+const MOVING=['toJudge','return','visit','cheer','toNest','toBowl'];
+const moving=p=>MOVING.includes(p.act);
+
+function visState(p){
+  if(p.act==='nap') return 'sleeping';
+  if(p.act==='talk'||p.act==='eat') return 'talk';
+  if(p.act==='cheerJump'||(p.moodTicks>0&&p.mood==='celebrate')) return 'celebrate';
+  if(p.moodTicks>0&&p.mood==='sad') return 'sad';
+  if(moving(p)) return 'walk';
+  if(S.pantry<300) return 'hungry';
+  return p.lemma?'working':'idle';
+}
+function statusText(p){
+  const L=p.lemma?p.lemma.id:'its lemma',P=p.partner?p.partner.name:'a teammate';
+  switch(p.act){
+    case 'nap': case 'toNest': return p.reason==='pantry'?'Napping: the pantry is empty':'Napping: today’s food cap is used';
+    case 'toJudge': case 'atJudge': return `Taking ${L} to the Lean judge`;
+    case 'cheer': case 'cheerJump': return p.moodTicks>0&&p.mood==='celebrate'?'Proof checked!':'Cheering for a teammate';
+    case 'visit': return p.purpose==='handoff'?`Handing ${L} to ${P}`:`Walking over to ${P}`;
+    case 'talk': case 'wait': return `Talking with ${P}`;
+    case 'toBowl': case 'eat': return 'Grabbing a snack from the pantry';
+    case 'return': return 'Heading back to camp';
+  }
+  if(p.moodTicks>0&&p.mood==='sad') return `Lean said no. Trying again on ${L}`;
+  if(S.pantry<300) return `Hungry, still on ${L}`;
+  return p.lemma?`On ${p.lemma.id}, try ${p.fails+1}`:'Looking for an open lemma';
+}
+function log(kind,text,pet){
+  const c=clock(S.tick);
+  feed.unshift({t:c.hm,kind,text,color:pet?`var(${pet.shell})`:(kind==='fees'?'var(--tang)':'var(--line)')});
+  if(feed.length>70) feed.pop();
+  if(pet){pet.recent.unshift(`${c.hm} ${text}`);if(pet.recent.length>5)pet.recent.pop();}
+}
+function goto(p,act,x,y){p.act=act;p.tx=Math.max(7,Math.min(WW-7,x));p.ty=Math.max(12,Math.min(WH-2,y));}
+function goCamp(p){const c=CAMPS[p.prog];goto(p,'return',c.x+rand(-14,14),c.py+rand(-3,3));}
+function goNest(p){const slot=pets.filter(q=>q.act==='nap'||q.act==='toNest').length;goto(p,'toNest',63+(slot%6)*7,21-Math.floor(slot/6)*5);}
+function goBowl(p){goto(p,'toBowl',pick([59,63,97,101])+rand(-2,2),96);}
+
+/* bubbles */
+const world=document.getElementById('world');
+function bubble(p,text){
+  if(world.querySelectorAll('.bubble').length>=4) return;
+  const b=document.createElement('div');b.className='bubble';b.textContent=text;
+  const left=Math.max(20,Math.min(140,p.x))/WW*100;
+  const above=(p.y-14)/WH*world.clientHeight>56;
+  b.style.left=left+'%';
+  if(above) b.style.top=((p.y-14)/WH*100)+'%'; else {b.classList.add('below');b.style.top=((p.y+3)/WH*100)+'%';}
+  world.appendChild(b);setTimeout(()=>b.remove(),3200);
+}
+const fill=(s,p,q)=>s.replace('{L}',p.lemma?p.lemma.id:'this one').replace('{M}',q||'L-circ-009');
+function checkedFrom(prog){const c=lemmas.filter(l=>l.status==='checked'&&l.prog===prog);return c.length?pick(c).id:null;}
+
+function addFees(v,byUser){
+  S.pantry+=v;S.feesIn+=v;
+  if(byUser){
+    log('fees',`You added ${money(v)} of fees (demo). The provers run to the pantry.`);
+    pets.forEach(p=>{if(p.act==='work'||(p.act==='nap'&&p.reason==='pantry')||p.act==='toNest'&&p.reason==='pantry'){p.asleep=false;goBowl(p);}});
+  } else log('fees',`Fees in: ${money(v)} added to the pantry.`);
+}
+function lease(p){
+  const open=lemmas.filter(l=>l.status==='open'&&!l.holder);if(!open.length) return;
+  const mine=open.filter(l=>l.prog===p.prog),l=pick(mine.length?mine:open);
+  l.holder=p.id;p.lemma=l;p.fails=0;log('lease',`${p.name} picked up ${l.id}.`,p);
+}
+function spend(p,cost){cost=Math.min(S.pantry,cost);S.pantry-=cost;S.spent+=cost;p.spentToday+=cost;S.tickSpend+=cost;}
+
+/* simulation tick */
+function tick(){
+  const prevDay=clock(S.tick).d;S.tick++;S.tickSpend=0;
+  if(clock(S.tick).d!==prevDay){pets.forEach(p=>{p.spentToday=0;if(p.act==='nap'&&p.reason==='cap'){p.asleep=false;goCamp(p);}});
+    log('day','New day. Every prover’s food cap resets to $40, and the nappers wake up.');}
+  if(Math.random()<.25) addFees(+rand(3,14).toFixed(2));
+  pets.forEach(p=>{
+    if(p.moodTicks>0) p.moodTicks--;
+    const why=S.pantry<=.5?'pantry':p.spentToday>=CAP?'cap':null;
+    if(why){
+      if((p.act==='work'||p.act==='wait')&&!p.asleep){p.asleep=true;p.reason=why;
+        log('sleep',why==='pantry'?`${p.name} curled up in the nap corner: the pantry is empty.`:`${p.name} used today’s food cap and went for a nap.`,p);goNest(p);}
+      return;
+    }
+    if(p.asleep&&p.act==='nap'){p.asleep=false;goCamp(p);return;}
+    if(p.act!=='work') return;
+    if(!p.lemma){if(Math.random()<.6)lease(p);return;}
+    if(S.pantry<300&&Math.random()<.04){goBowl(p);return;}
+    if(Math.random()>.5) return;
+    spend(p,rand(.2,.55));
+    const pc=.07+Math.min(.05,p.fails*.01)+(p.hint||0),r=Math.random();
+    if(r<pc){p.pending='pass';}
+    else if(r<pc+.008){p.pending='refute';}
+    else if(r<pc+.03){p.pending='reject';}
+    else{
+      p.fails++;p.failedTotal++;
+      if(Math.random()<.25){log('fail',`${p.name}’s local check on ${p.lemma.id} failed: ${pick(ERRORS)}.`,p);p.mood='sad';p.moodTicks=2;}
+      if(p.fails>=7&&Math.random()<.3){
+        const mates=pets.filter(q=>q!==p&&q.prog===p.prog&&!q.lemma&&q.act==='work'&&!q.asleep);
+        if(mates.length){const q=pick(mates);p.partner=q;p.purpose='handoff';goto(p,'visit',q.x+(p.x<q.x?-9:9),q.y);q.act='wait';q.partner=p;q.actT=90;q.tx=q.x;q.ty=q.y;}
+        else{log('release',`${p.name} gave up on ${p.lemma.id} after ${p.fails} tries. Notes saved for the next prover.`,p);p.lemma.holder=null;p.lemma=null;p.fails=0;}
+      }
+      return;
+    }
+    p.carry=true;goto(p,'toJudge',JUDGE.x+rand(-6,6),JUDGE.y);
+  });
+  /* collaboration */
+  if(Math.random()<.2){
+    const As=pets.filter(p=>p.act==='work'&&p.lemma&&!p.asleep);
+    if(As.length){const A=pick(As);const Bs=pets.filter(q=>q!==A&&q.act==='work'&&!q.asleep);
+      if(Bs.length){const same=Bs.filter(q=>q.prog===A.prog);const B=(same.length&&Math.random()<.6)?pick(same):pick(Bs);
+        const pair=pick(PAIRS),M=checkedFrom(A.prog);
+        A.say=fill(pair[0],A,M);B.say=fill(pair[1],A,M);
+        A.partner=B;A.purpose='talk';goto(A,'visit',B.x+(A.x<B.x?-9:9),B.y);
+        B.act='wait';B.partner=A;B.actT=90;B.tx=B.x;B.ty=B.y;}}
+  }
+  S.spendLog.push(S.tickSpend);if(S.spendLog.length>60)S.spendLog.shift();
+  render();
+}
+
+/* world frame: movement + arrivals */
+let gate={type:null,t:0};
+function arrive(p){
+  switch(p.act){
+    case 'toJudge': p.act='atJudge';p.actT=9;break;
+    case 'return': p.act='work';break;
+    case 'toNest': p.act='nap';break;
+    case 'toBowl': p.act='eat';p.actT=14;if(S.pantry<300&&Math.random()<.5)bubble(p,'The bowl is almost empty…');break;
+    case 'cheer': p.act='cheerJump';p.actT=14;break;
+    case 'visit':{
+      const B=p.partner;
+      if(!B||B.act!=='wait'||B.partner!==p){goCamp(p);break;}
+      spend(p,.05);
+      if(p.purpose==='handoff'&&p.lemma){
+        const L=p.lemma;B.lemma=L;L.holder=B.id;B.fails=0;B.hint=.03;p.lemma=null;p.fails=0;p.notes++;
+        log('chat',`${p.name} handed ${L.id} and its notes to ${B.name}.`,p);
+        bubble(p,`Here’s ${L.id} and my notes.`);setTimeout(()=>bubble(B,'Got it. Fresh eyes!'),1300);
+      } else {
+        log('chat',`${p.name} asked ${B.name}: “${p.say}”`,p);
+        bubble(p,p.say);const reply=B.say;
+        setTimeout(()=>{bubble(B,reply);log('chat',`${B.name} replied: “${reply}”`,B);render();},1500);
+        p.hint=.02;B.notes++;
+      }
+      p.act='talk';p.actT=30;B.act='talk';B.actT=30;break;}
+  }
+}
+function resolveJudge(p){
+  p.carry=false;const L=p.lemma;
+  if(!L){goCamp(p);return;}
+  if(p.pending==='pass'){
+    L.status='checked';L.holder=null;p.checked++;
+    log('checked',`${p.name}’s proof of ${L.id} passed the Lean checker.`,p);
+    gate={type:'pass',t:12};p.lemma=null;p.fails=0;p.hint=0;p.mood='celebrate';p.moodTicks=4;p.act='cheerJump';p.actT=16;
+    bubble(p,pick(['It passed!','Lean says yes!','Checked!']));
+    let first=true;
+    pets.forEach(q=>{if(q!==p&&q.act==='work'&&!q.asleep&&(q.prog===p.prog||Math.hypot(q.x-p.x,q.y-p.y)<50)&&Math.random()<.85){
+      const side=Math.random()<.5?-1:1;goto(q,'cheer',JUDGE.x+side*rand(13,24),rand(60,70));
+      if(first){first=false;const nxt=lemmas.find(l=>l.prog===p.prog&&l.status==='open');
+        setTimeout(()=>bubble(q,pick(CHEERS).replace('{N}',p.name).replace('{L2}',nxt?nxt.id:'the next step')),1800);}}});
+  } else if(p.pending==='refute'){
+    L.status='refuted';L.holder=null;gate={type:'pass',t:10};
+    log('refuted',`${p.name} proved ${L.id} is false. It moves to the graveyard.`,p);
+    p.lemma=null;p.fails=0;p.mood='celebrate';p.moodTicks=3;goCamp(p);
+  } else {
+    p.fails++;p.failedTotal++;gate={type:'reject',t:10};
+    log('fail',`The Lean judge rejected ${p.name}’s proof of ${L.id}: ${pick(ERRORS)}.`,p);
+    p.mood='sad';p.moodTicks=3;bubble(p,'Rejected. Back to the board.');goCamp(p);
+  }
+  p.pending='';
+}
+function step(){
+  const sp=reduce?3:2;
+  pets.forEach(p=>{
+    if(moving(p)){
+      const dx=p.tx-p.x,dy=p.ty-p.y,d=Math.hypot(dx,dy);
+      if(d<=sp){p.x=p.tx;p.y=p.ty;arrive(p);} else {p.x+=dx/d*sp;p.y+=dy/d*sp;}
+      return;
+    }
+    if(p.actT>0){p.actT--;
+      if(p.actT===0){
+        if(p.act==='atJudge') resolveJudge(p);
+        else if(p.act==='talk'){const B=p.partner;if(p.purpose&&B){p.purpose='';goCamp(p);} else {p.act='work';}p.partner=null;}
+        else if(p.act==='wait'){p.act='work';p.partner=null;}
+        else if(p.act==='cheerJump'||p.act==='eat') goCamp(p);
+      }
+      return;
+    }
+    if(p.act==='work'&&Math.random()<.025){const c=CAMPS[p.prog];p.tx=c.x+rand(-15,15);p.ty=c.py+rand(-4,4);p.act='return';}
+  });
+  if(gate.t>0)gate.t--;
+}
+
+/* painting */
+function paint(P,F,p,ox,oy,st,f){
+  const m=MASKS[p.species];
+  if(F) m.fill.forEach(([x,y])=>F(ox+x,oy+y));
+  m.line.forEach(([x,y])=>P(ox+x,oy+y));
+  const blink=(st==='working'||st==='idle')&&f%9===0;
+  [[ox+3,oy+5],[ox+8,oy+5]].forEach(([x,y])=>{
+    if(st==='sleeping'||blink){P(x-1,y);P(x,y);P(x+1,y);}
+    else if(st==='celebrate'){P(x-1,y);P(x,y-1);P(x+1,y);}
+    else if(st==='sad'){P(x-1,y-1);P(x+1,y-1);P(x,y);P(x-1,y+1);P(x+1,y+1);}
+    else P(x,y);
+  });
+  const mx=ox+5,my=oy+7;
+  if(st==='celebrate'){P(mx-1,my-1);P(mx,my);P(mx+1,my);P(mx+2,my-1);}
+  else if(st==='sad'){P(mx-1,my);P(mx,my-1);P(mx+1,my-1);P(mx+2,my);}
+  else if(st==='hungry'||(st==='talk'&&f%2)){P(mx,my-1);P(mx+1,my-1);P(mx,my);P(mx+1,my);}
+  else if(st!=='sleeping'){P(mx,my);P(mx+1,my);}
+  if(st==='sleeping'){const zx=ox+(f%2?10:9),zy=oy-(f%2?3:2);P(zx,zy);P(zx+1,zy);P(zx+2,zy);P(zx+1,zy+1);P(zx,zy+2);P(zx+1,zy+2);P(zx+2,zy+2);}
+  if(st==='working'){const n=f%4;for(let i=0;i<n;i++)P(ox+i*2,oy-2);}
+  if(st==='celebrate'){[f%2?[ox-1,oy-2]:[ox+11,oy-2],f%2?[ox+11,oy-1]:[ox-1,oy-1]].forEach(([x,y])=>{P(x,y);P(x-1,y);P(x+1,y);P(x,y-1);P(x,y+1);});}
+  if(st==='sad'&&f%2)P(ox+2,oy+7);
+  if(st==='hungry'){P(ox+12,oy-3);P(ox+12,oy-2);P(ox+12,oy);}
+}
+function drawEgg(cv,p,f){
+  const ctx=cv.getContext('2d'),s=cv.width/16;
+  ctx.clearRect(0,0,cv.width,cv.height);
+  ctx.globalAlpha=.07;ctx.fillStyle=C['--pix'];for(let y=0;y<15;y++)for(let x=0;x<16;x++)ctx.fillRect(x*s+.5,y*s+.5,s-1,s-1);ctx.globalAlpha=1;
+  const P=(x,y)=>{if(x>=0&&y>=0&&x<16&&y<15)ctx.fillRect(x*s,y*s,s,s);};
+  let st=visState(p);if(st==='walk')st=p.lemma?'working':'idle';
+  let b=0;if(!reduce){if(st==='working'||st==='idle')b=f%2;else if(st==='celebrate')b=-(f%2);else if(st==='hungry')b=f%4===0?1:0;else if(st==='sad')b=1;}
+  paint(P,null,p,2,3+b,st,f);
+}
+
+/* world canvas */
+const wc=document.getElementById('wc'),wctx=wc.getContext('2d');
+const bg=document.createElement('canvas'),bctx=bg.getContext('2d');
+let S_=4,gap=1;
+function resize(){
+  const r=world.getBoundingClientRect(),dpr=window.devicePixelRatio||1;
+  S_=Math.max(2,Math.round(r.width*dpr/WW));gap=S_>=4?1:0;
+  wc.width=bg.width=WW*S_;wc.height=bg.height=WH*S_;bgDirty=true;
+}
+function drawStatic(){
+  bctx.clearRect(0,0,bg.width,bg.height);
+  const P=(x,y)=>bctx.fillRect(x*S_,y*S_,S_-gap,S_-gap);
+  bctx.fillStyle=C['--pix'];
+  if(gap){bctx.globalAlpha=.06;for(let y=0;y<WH;y++)for(let x=0;x<WW;x++)P(x,y);bctx.globalAlpha=1;}
+  Object.values(CAMPS).forEach((c,i)=>{const t=c.board;
+    for(let x=c.x-11;x<=c.x+11;x++){P(x,t);P(x,t+10);}
+    for(let y=t;y<=t+10;y++){P(c.x-11,y);P(c.x+11,y);}
+    for(let y=t+11;y<=t+13;y++){P(c.x-8,y);P(c.x+8,y);}
+    [t+3,t+5].forEach(row=>{for(let x=c.x-8;x<=c.x+8;x++)if(((x*7+row*3+i)%5)<3)P(x,row);});
+  });
+  for(let x=69;x<=91;x++){P(x,38);P(x,39);}
+  for(let x=79;x<=81;x++){P(x,36);P(x,37);}
+  for(let y=40;y<=57;y++){P(71,y);P(72,y);P(88,y);P(89,y);}
+  for(let x=57;x<=103;x++){P(x,22);P(x,24);}P(57,23);P(103,23);P(58,25);P(102,25);
+  for(let x=68;x<=92;x++)P(x,88);P(69,89);P(91,89);P(70,90);P(90,90);for(let x=71;x<=89;x++)P(x,91);
+  bgDirty=false;
+}
+const BOWL=[];for(let x=71;x<=89;x++)BOWL.push([x,90]);for(let x=70;x<=90;x++)BOWL.push([x,89]);
+function drawWorld(af,wf){
+  if(bgDirty)drawStatic();
+  wctx.clearRect(0,0,wc.width,wc.height);wctx.drawImage(bg,0,0);
+  const P=(x,y)=>{x=Math.round(x);y=Math.round(y);if(x>=0&&y>=0&&x<WW&&y<WH)wctx.fillRect(x*S_,y*S_,S_-gap,S_-gap);};
+  /* board progress */
+  Object.entries(CAMPS).forEach(([k,c])=>{const all=lemmas.filter(l=>l.prog===k),done=all.filter(l=>l.status==='checked').length;
+    const n=Math.round(18*done/all.length);wctx.fillStyle=C['--pix'];for(let x=0;x<n;x++)P(c.x-9+x,c.board+8);});
+  /* bowl */
+  wctx.fillStyle=C['--tang'];const nb=Math.round(BOWL.length*Math.min(1,S.pantry/3000));for(let i=0;i<nb;i++)P(BOWL[i][0],BOWL[i][1]);
+  /* gate flash */
+  wctx.fillStyle=C['--pix'];
+  if(gate.t>0&&(gate.t%2||reduce)){
+    if(gate.type==='pass'){[[77,49],[78,50],[79,51],[80,50],[81,49],[82,48],[83,47]].forEach(([x,y])=>P(x,y));
+      [[66,34],[67,35],[94,34],[93,35],[66,46],[94,46],[80,31],[80,32]].forEach(([x,y])=>P(x,y));}
+    else [[77,46],[78,47],[79,48],[80,49],[81,50],[82,51],[83,52],[83,46],[82,47],[81,48],[79,50],[78,51],[77,52]].forEach(([x,y])=>P(x,y));
+  }
+  /* pets, back to front */
+  [...pets].sort((a,b)=>a.y-b.y).forEach(p=>{
+    const st=visState(p);
+    let b=0;
+    if(!reduce){if(st==='walk')b=-(wf%2);else if(st==='celebrate')b=-((Math.floor(wf/2))%2)*2;else if(st==='working'||st==='idle')b=af%2;}
+    const ox=Math.round(p.x)-6,oy=Math.round(p.y)-11+b;
+    const shell=C[p.shell];
+    paint((x,y)=>{wctx.fillStyle=C['--pix'];P(x,y);},(x,y)=>{wctx.fillStyle=shell;P(x,y);},p,ox,oy,st,af+p.off);
+    if(p.carry){wctx.fillStyle='#FFFDF6';P(ox+12,oy+5);P(ox+13,oy+5);P(ox+12,oy+6);P(ox+13,oy+6);wctx.fillStyle=C['--pix'];P(ox+14,oy+5);P(ox+14,oy+6);P(ox+12,oy+7);P(ox+13,oy+7);P(ox+14,oy+7);}
+  });
+}
+/* overlay labels */
+const labels={};
+function addLabel(key,x,y,bottom){const d=document.createElement('div');d.className='wl'+(bottom?' b':'');d.style.left=(x/WW*100)+'%';d.style.top=(y/WH*100)+'%';world.appendChild(d);labels[key]=d;return d;}
+Object.entries(CAMPS).forEach(([k,c])=>addLabel(k,c.x,c.top?1.5:99,!c.top));
+addLabel('judge',80,34.5,true).textContent='Lean judge';
+addLabel('nest',80,1.5,false).textContent='Nap corner';
+addLabel('pantry',80,99,true).textContent='Pantry';
+
+/* click on world */
+wc.addEventListener('click',e=>{const r=wc.getBoundingClientRect(),lx=(e.clientX-r.left)/r.width*WW,ly=(e.clientY-r.top)/r.height*WH;
+  let best=null,bd=1e9;pets.forEach(p=>{const d=Math.hypot(p.x-lx,(p.y-5)-ly);if(d<bd){bd=d;best=p;}});if(best&&bd<11)openDlg(best);});
+
+/* roster */
+const colony=document.getElementById('colony');
+pets.forEach(p=>{
+  const btn=document.createElement('button');btn.className='pet';btn.type='button';
+  btn.innerHTML=`<div class="egg" style="--shell:var(${p.shell})"><div class="screen"><canvas width="128" height="120" aria-hidden="true"></canvas></div><div class="btns" aria-hidden="true"><i></i><i></i><i></i></div></div><div class="pname">${p.name}</div><div class="pstate"></div><div class="food"><span></span></div>`;
+  btn.addEventListener('click',()=>openDlg(p));colony.appendChild(btn);
+  p.el=btn;p.cv=btn.querySelector('canvas');p.st=btn.querySelector('.pstate');p.food=btn.querySelector('.food');
+});
+
+/* dialog */
+const dlg=document.getElementById('dlg');let sel=null;
+function openDlg(p){sel=p;document.getElementById('d-egg').style.setProperty('--shell',`var(${p.shell})`);renderDlg();if(dlg.showModal)dlg.showModal();else dlg.setAttribute('open','');}
+document.getElementById('d-close').addEventListener('click',()=>dlg.close());
+dlg.addEventListener('click',e=>{if(e.target===dlg)dlg.close();});
+dlg.addEventListener('close',()=>{sel=null;});
+function renderDlg(){
+  if(!sel)return;const p=sel,g=id=>document.getElementById(id);
+  g('d-name').textContent=p.name;g('d-mood').textContent=statusText(p);g('d-prog').textContent=PROGRAMS[p.prog].name;
+  g('d-level').textContent=level(p);g('d-checked').textContent=p.checked;g('d-failed').textContent=p.failedTotal;
+  g('d-food').textContent=money(Math.max(0,CAP-p.spentToday));g('d-notes').textContent=p.notes;
+  g('d-lemma').innerHTML=p.lemma?`<small>Current lemma</small><div class="lemma-id">${p.lemma.id}</div><pre>${esc(p.lemma.stmt)}</pre><small>Illustrative statement for the demo.</small>`:`<small>Current lemma</small><div>None right now.</div>`;
+  g('d-recent').innerHTML=p.recent.length?p.recent.map(r=>`<li>${esc(r)}</li>`).join(''):'<li>Nothing yet.</li>';
+}
+
+function render(){
+  const g=id=>document.getElementById(id);
+  g('h-checked').textContent=lemmas.filter(l=>l.status==='checked').length;g('h-total').textContent=lemmas.length;
+  g('h-awake').textContent=pets.filter(p=>p.act!=='nap'&&p.act!=='toNest').length;
+  const perTick=S.spendLog.length?S.spendLog.reduce((a,b)=>a+b,0)/S.spendLog.length:2,days=S.pantry/Math.max(.01,perTick*TICKS_PER_DAY);
+  g('h-days').textContent=days.toFixed(1);const c=clock(S.tick);g('h-clock').textContent=`day ${c.d} ${c.hm}`;
+  g('p-now').textContent=money(S.pantry);g('p-in').textContent=money(S.feesIn);g('p-out').textContent=money(S.spent);
+  g('p-days').textContent=`about ${days.toFixed(1)} days`;g('jarfill').style.height=Math.min(100,S.pantry/3000*100)+'%';
+  Object.entries(CAMPS).forEach(([k,cp])=>{const all=lemmas.filter(l=>l.prog===k);labels[k].textContent=`${cp.label} ${all.filter(l=>l.status==='checked').length}/${all.length}`;});
+  pets.forEach(p=>{const t=statusText(p);p.st.textContent=t;p.el.setAttribute('aria-label',`${p.name}: ${t}`);
+    const left=Math.max(0,CAP-p.spentToday)/CAP;p.food.firstElementChild.style.width=(left*100)+'%';
+    p.food.classList.toggle('low',left<.3&&left>0);p.food.classList.toggle('out',left<=0);});
+  g('feed').innerHTML=feed.map(e=>`<li><time>${e.t}</time><span class="dot" style="--dot:${e.color}"></span><span class="k-${e.kind}">${esc(e.text)}</span></li>`).join('');
+  renderDlg();
+}
+
+document.getElementById('addfees').addEventListener('click',()=>{addFees(50,true);render();});
+if(window.ResizeObserver)new ResizeObserver(resize).observe(world);else window.addEventListener('resize',resize);
+resize();
+
+/* seed */
+pets.forEach(p=>{if(Math.random()<.8)lease(p);});
+log('day','The colony woke up. Twelve provers are on duty in four camps.');
+render();
+let wf=0;
+setInterval(()=>{wf++;step();const af=Math.floor(wf/3);drawWorld(af,wf);
+  if(wf%3===0){pets.forEach(p=>drawEgg(p.cv,p,af+p.off));if(sel)drawEgg(document.getElementById('d-canvas'),sel,af+sel.off);}},120);
+setInterval(tick,900);
+})();
+</script>
+</body>
+</html>
